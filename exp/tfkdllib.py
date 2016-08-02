@@ -926,7 +926,7 @@ def write_out_midi_from_duration_pitch(filename, durations, pitches):
 
 
 
-class tfrecord_iterator(object):
+class tfrecord_duration_iterator(object):
     def __init__(self, files_path, minibatch_size, start_index=0,
                  stop_index=np.inf, make_mask=True,
                  new_file_new_sequence=False,
@@ -1086,6 +1086,179 @@ class tfrecord_iterator(object):
             shp = res[0].shape
             self._current_index = e
             return res[0], res[2]
+
+    def reset(self):
+        self._current_index = self.start_index
+
+
+def notesequence_to_piano_roll(notesequence, sample_rate=0.125):
+    ns = notesequence
+    notes = ns.notes
+    st = np.array([n.start_time for n in notes]).astype("float32")
+    et = np.array([n.end_time for n in notes]).astype("float32")
+    dt = et - st
+    sample_steps = dt / sample_rate
+    # If this fails the sample_rate is not an integer divisor
+    assert np.all(np.abs(sample_steps - sample_steps.astype("int32")) < 1E-8)
+
+    sample_times = sorted(list(set(st)))
+    sn = 4
+
+    p = np.array([n.pitch for n in notes]).astype("float32")
+    pitch_slices = [p[st == sti][::-1][:sn] for sti in sample_times]
+    start_slices = [st[st == sti][::-1][:sn] for sti in sample_times]
+    end_slices = [et[st == sti][::-1][:sn] for sti in sample_times]
+    # If this fails something bad has happened in the ragged reshape
+    assert len(pitch_slices) == len(start_slices)
+    assert len(start_slices) == len(end_slices)
+    group = zip(pitch_slices, start_slices, end_slices)
+
+    # 88 + 1 for every note + each voice silence....
+    maxlen = int(max(et) / sample_rate) + 1
+    piano_roll = np.zeros((maxlen, 88 + 1)).astype("float32")
+
+    # This iteration is terrible but making it faster will be annoying
+    current_time = 0.
+    for ti in range(len(piano_roll)):
+        for ps, ss, es in group:
+            if np.all(es < current_time):
+                continue
+            smask = ss <= current_time
+            emask = es >= current_time
+            mask = smask * emask
+            idx = ps.astype("int32") * mask
+            piano_roll[ti, idx] = 1.
+            if np.all(es > current_time):
+                # no need to iterate all
+                break
+        current_time += sample_rate
+    # Cut off silence, handle in iterator!
+    piano_roll = piano_roll[:, 1:]
+    return piano_roll
+
+
+# TODO: Eliminate duplicate stuff...
+class tfrecord_roll_iterator(object):
+    def __init__(self, files_path, minibatch_size, start_index=0,
+                 stop_index=np.inf, make_mask=False,
+                 new_file_new_sequence=False,
+                 sequence_length=None,
+                 randomize=True, preprocess=None,
+                 preprocess_kwargs={}):
+        """
+        Supports regular int, negative indexing, or float for setting
+        stop_index
+        Two "modes":
+            new_line_new_sequence will do variable length minibatches based
+            on newlines in the file
+
+            without new_line_new_sequence the file is effectively one continuous
+            stream, and minibatches will be sequence_length, batch_size, 1
+        """
+        # TODO: FIX THIS HANDCRAFTED WEB OF LIES
+        # Need to figure out magenta path stuff later
+        # for now...
+        # PYTHONPATH=$PYTHONPATH:$HOME/src/magenta/
+        # bazel build //magenta:protobuf:music_py_pb2
+        # symlink bazel-out/local-opt/genfiles/magenta/protobuf/music_pb2.py
+        # into protobuf dir.
+        # Add __init__ files all over the place
+        # symlinked the BachChorale data in for now too...
+        from magenta.lib.note_sequence_io import note_sequence_record_iterator
+        reader = note_sequence_record_iterator(files_path)
+        self.note_classes = list(np.arange(88 + 1))  # + 1 for silence
+        # set automatically
+        # self.simultaneous_notes = int(max(np.sum(self._data, axis=0)))
+        self.simultaneous_notes = 4
+        import multiprocessing as mp
+        pool = mp.Pool()
+        all_pr = pool.map(notesequence_to_piano_roll, reader)
+        del pool
+
+        if new_file_new_sequence:
+            raise ValueError("Unhandled case")
+        else:
+            all_pr = np.concatenate(all_pr)
+            truncate = len(all_pr) - len(all_pr) % minibatch_size
+            all_pr = all_pr[:truncate]
+            all_pr = all_pr.reshape(len(all_pr) // minibatch_size,
+                                    minibatch_size, -1)
+            _len = len(all_pr)
+            self._data = all_pr
+
+        self.minibatch_size = minibatch_size
+        self.new_file_new_sequence = new_file_new_sequence
+        self.sequence_length = sequence_length
+        if randomize:
+            self.random_state = np.random.RandomState(2177)
+        self.make_mask = make_mask
+        if new_file_new_sequence and sequence_length is None:
+            raise ValueError("sequence_length must be provided if",
+                             "new_line_new_sequence is False!")
+
+        if stop_index >= 1:
+            self.stop_index = int(min(stop_index, _len))
+        elif stop_index > 0:
+            # percentage
+            self.stop_index = int(stop_index * _len)
+        elif stop_index < 0:
+            # negative index - must be int!
+            self.stop_index = _len + int(stop_index)
+
+
+        self.start_index = start_index
+        if start_index < 0:
+            # negative indexing
+            self.start_index = _len + start_index
+        elif start_index < 1:
+            # float
+            self.start_index = int(start_index * _len)
+        else:
+            # regular
+            self.start_index = int(start_index)
+        if self.start_index >= self.stop_index:
+            ss = "Invalid indexes - stop "
+            ss += "%s <= start %s !" % (self.stop_index, self.start_index)
+            raise ValueError(ss)
+        self._current_index = self.start_index
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        return self.__next__()
+
+    def __next__(self):
+        s = self._current_index
+        if self.new_file_new_sequence:
+            raise ValueError("not handled")
+        else:
+            e = s + self.sequence_length
+            if e > self.stop_index:
+                raise StopIteration("End of file iterator reached!")
+
+            # Convert from raw piano roll to embedding elements
+            data = self._data[s:e]
+            dr = data.reshape(-1, data.shape[-1])
+            note_data = np.zeros_like(dr[:, :self.simultaneous_notes])
+            for i in range(len(dr)):
+                # Truncate to at most N voices
+                notes = dr[i].nonzero()[0][:self.simultaneous_notes]
+                note_data[i, :len(notes)] = notes
+            note_data = note_data.reshape((data.shape[0], data.shape[1], -1))
+            if self.make_mask is False:
+                res = note_data
+            else:
+                raise ValueError("Not handled")
+                # super lazy way to make a mask
+                li = list_iterator([note_data,],
+                                   self.minibatch_size,
+                                   axis=1, start_index=0,
+                                   stop_index=len(note_data),
+                                   make_mask=self.make_mask)
+                res = next(li)
+            self._current_index = e
+            return res
 
     def reset(self):
         self._current_index = self.start_index

@@ -6,29 +6,29 @@ from tfkdllib import Multiembedding, GRUFork, GRU, Linear, Automask
 from tfkdllib import softmax, categorical_crossentropy
 #from tfkdllib import midi_file_iterator
 from tfkdllib import run_loop
-from tfkdllib import tfrecord_iterator
+from tfkdllib import tfrecord_duration_iterator
 
 
 batch_size = 5
 sequence_length = 20
 
-train_itr = tfrecord_iterator("BachChorales.tfrecord",
-                              batch_size, make_mask=True,
-                              stop_index=.9,
-                              sequence_length=sequence_length)
+train_itr = tfrecord_duration_iterator("BachChorales.tfrecord",
+                                       batch_size, make_mask=True,
+                                       stop_index=.9,
+                                       sequence_length=sequence_length)
 
 # TODO: Add validation set...
-valid_itr = tfrecord_iterator("BachChorales.tfrecord",
-                              batch_size, make_mask=True,
-                              start_index=.9,
-                              sequence_length=sequence_length)
+valid_itr = tfrecord_duration_iterator("BachChorales.tfrecord",
+                                       batch_size, make_mask=True,
+                                       start_index=.9,
+                                       sequence_length=sequence_length)
 
 duration_mb, note_mb = next(train_itr)
 train_itr.reset()
 
 num_note_features = note_mb.shape[-1]
 num_duration_features = duration_mb.shape[-1]
-num_epochs = 500
+num_epochs = 100
 n_note_symbols = len(train_itr.note_classes)
 n_duration_symbols = len(train_itr.time_classes)
 n_notes = train_itr.simultaneous_notes
@@ -150,4 +150,4 @@ if __name__ == "__main__":
     run_loop(_loop, train_itr, valid_itr,
              n_epochs=num_epochs,
              checkpoint_delay=10,
-             checkpoint_every_n_epochs=100)
+             checkpoint_every_n_epochs=5)

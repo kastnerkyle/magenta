@@ -19,7 +19,7 @@ def sample(kwargs):
      sample,
      sample_len) = validate_sample_args(**kwargs)
     # Wow this is nastyyyyy
-    from midi_rnn import *
+    from duration_rnn import *
     duration_mb, note_mb = train_itr.next()
     write_out_midi_from_duration_pitch("gt.mid", duration_mb, note_mb)
 
