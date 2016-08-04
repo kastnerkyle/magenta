@@ -4,12 +4,11 @@ import numpy as np
 from tfkdllib import ni, scan
 from tfkdllib import Multiembedding, GRUFork, GRU, Linear, Automask
 from tfkdllib import softmax, categorical_crossentropy
-#from tfkdllib import midi_file_iterator
 from tfkdllib import run_loop
 from tfkdllib import tfrecord_roll_iterator
 
 
-batch_size = 20
+batch_size = 50
 sequence_length = 20
 
 train_itr = tfrecord_roll_iterator("BachChorales.tfrecord",
@@ -68,12 +67,14 @@ for i in range(n_notes):
     note_pred = Linear([h1, h2, target_note_masked[i]],
                        [h_dim, h_dim, n_notes * note_embed_dim],
                        note_out_dims[i], random_state, weight_norm=False)
-    n = categorical_crossentropy(softmax(note_pred), note_target[:, :, i])
+    # reweight by empirical counts?
+    n = categorical_crossentropy(softmax(note_pred), note_target[:, :, i],
+                                 class_weights={0: .001})
     cost = tf.reduce_sum(n)
     note_preds.append(note_pred)
     costs.append(cost)
 
-cost = sum(costs)
+cost = sum(costs) #/ (sequence_length * batch_size)
 
 # cost in bits
 # cost = cost * 1.44269504089

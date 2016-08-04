@@ -716,6 +716,17 @@ def piano_roll_to_midi(filename, piano_roll):
     midi.write_midifile(filename, pattern)
 
 
+def notes_to_midi(filename, notes):
+    # + 1 to simplify silence
+    piano_roll = np.zeros((len(notes), 88 + 1)).astype("float32")
+    for n in range(len(notes)):
+        idx = notes[n].astype("int32")
+        piano_roll[n, idx] = 1.
+    # cut off silence
+    piano_roll = piano_roll[:, 1:]
+    piano_roll_to_midi(filename, piano_roll)
+
+
 class midi_file_iterator(object):
     def __init__(self, files_path, minibatch_size, start_index=0,
                  stop_index=np.inf, make_mask=True,
@@ -1091,7 +1102,7 @@ class tfrecord_duration_iterator(object):
         self._current_index = self.start_index
 
 
-def notesequence_to_piano_roll(notesequence, sample_rate=0.125):
+def notesequence_to_piano_roll(notesequence, sample_rate=0.0625):
     ns = notesequence
     notes = ns.notes
     st = np.array([n.start_time for n in notes]).astype("float32")
@@ -1102,6 +1113,7 @@ def notesequence_to_piano_roll(notesequence, sample_rate=0.125):
     assert np.all(np.abs(sample_steps - sample_steps.astype("int32")) < 1E-8)
 
     sample_times = sorted(list(set(st)))
+    # TODO: generalize this
     sn = 4
 
     p = np.array([n.pitch for n in notes]).astype("float32")
@@ -1132,7 +1144,7 @@ def notesequence_to_piano_roll(notesequence, sample_rate=0.125):
                 # no need to iterate all
                 break
         current_time += sample_rate
-    # Cut off silence, handle in iterator!
+    # Cut off silence, handle turning to indices or padding in iterator!
     piano_roll = piano_roll[:, 1:]
     return piano_roll
 
@@ -1170,19 +1182,23 @@ class tfrecord_roll_iterator(object):
         # set automatically
         # self.simultaneous_notes = int(max(np.sum(self._data, axis=0)))
         self.simultaneous_notes = 4
-        import multiprocessing as mp
-        pool = mp.Pool()
-        all_pr = pool.map(notesequence_to_piano_roll, reader)
-        del pool
+        #import multiprocessing as mp
+        #pool = mp.Pool()
+        #all_pr = pool.map(notesequence_to_piano_roll, reader)
+        #del pool
+        all_pr = map(notesequence_to_piano_roll, reader)
 
         if new_file_new_sequence:
             raise ValueError("Unhandled case")
         else:
-            all_pr = np.concatenate(all_pr)
+            all_pr = np.concatenate(all_pr, axis=0)
             truncate = len(all_pr) - len(all_pr) % minibatch_size
             all_pr = all_pr[:truncate]
-            all_pr = all_pr.reshape(len(all_pr) // minibatch_size,
-                                    minibatch_size, -1)
+            # transpose necessary to preserve data structure!
+            all_pr = all_pr.transpose(1, 0)
+            all_pr = all_pr.reshape(-1, minibatch_size,
+                                    all_pr.shape[1] // minibatch_size)
+            all_pr = all_pr.transpose(2, 1, 0)
             _len = len(all_pr)
             self._data = all_pr
 
@@ -2183,7 +2199,8 @@ def binary_crossentropy(predicted_values, true_values):
         1 - true_values) * tensor.log(1 - predicted_values)).sum(axis=-1)
 
 
-def categorical_crossentropy(predicted_values, true_values, eps=0.):
+def categorical_crossentropy(predicted_values, true_values, class_weights=None,
+                             eps=0.):
     """
     Multinomial negative log likelihood of predicted compared to one hot
     true_values
@@ -2199,6 +2216,11 @@ def categorical_crossentropy(predicted_values, true_values, eps=0.):
 
     eps : float, default 0
         Epsilon to be added during log calculation to avoid NaN values.
+
+    class_weights : dictionary with form {class_index: weight)
+        Unspecified classes will get the default weight of 1.
+        See discussion here for understanding how class weights work
+        http://stackoverflow.com/questions/30972029/how-does-the-class-weight-parameter-in-scikit-learn-work
 
     Returns
     -------
@@ -2237,10 +2259,23 @@ def categorical_crossentropy(predicted_values, true_values, eps=0.):
         else:
             raise ValueError("Dimensions of true_values and predicted_values"
                              "mismatched")
+        # repeat so the right shape is captured
+        tshp = shape(true_values)
+    cw = np.ones(pshp[-1], dtype="float32")
+    if class_weights is not None:
+        for k, v in class_weights.items():
+            cw[k] = v
+        cw = cw / np.sum(cw)
+        cw = cw / (np.sum(cw) + 1E-12)
+    # expand dimensions for broadcasting
+    if len(tshp) == 3:
+        cw = cw[None, None, :]
+    elif len(tshp) == 2:
+        cw = cw[None, :]
     nd = len(shape(true_values))
     assert nd == len(shape(predicted_values))
     stable_result = tf.select(true_values < 1E-20, 0. * predicted_values,
-                              true_values * tf.log(predicted_values))
+                              cw * true_values * tf.log(predicted_values))
     ce = -tf.reduce_sum(stable_result, reduction_indices=[nd - 1])
     return ce
 
@@ -2277,14 +2312,47 @@ def sample_softmax(coeff, theano_rng, epsilon=1E-5, debug=False):
     return tensor.cast(idx, "float32")
 
 
-def numpy_sample_softmax(coeff, random_state, debug=False):
+def numpy_sample_softmax(coeff, random_state, class_weights=None, debug=False):
+    """
+    Numpy function to sample from a softmax distribution
+
+    Parameters
+    ----------
+    coeff : array-like, shape 2D or higher
+        The predicted class probabilities out of some layer,
+        normally the output of a softmax
+
+    random_state : numpy.random.RandomState() instance
+
+    class_weights : dictionary with form {class_index: weight}, default None
+        Unspecified classes will get the default weight of 1.
+        See discussion here for understanding how class weights work
+        http://stackoverflow.com/questions/30972029/how-does-the-class-weight-parameter-in-scikit-learn-work
+
+    debug: Boolean, default False
+        Take the argmax instead of sampling. Useful for debugging purposes or
+        testing greedy sampling.
+
+    Returns
+    -------
+    samples : array-like, shape of coeff.shape[:-1]
+        Sampled values
+    """
     reshape_dims = coeff.shape[:-1]
     coeff = coeff.reshape((-1, coeff.shape[-1]))
+    cw = np.ones((1, coeff.shape[-1])).astype("float32")
+    if class_weights is not None:
+        for k, v in class_weights.items():
+            cw[k] = v
+        cw = cw / np.sum(cw)
+        cw = cw / (np.sum(cw) + 1E-12)
     if debug:
         idx = coeff.argmax(axis=-1)
     else:
+        coeff = cw * coeff
         # renormalize to avoid numpy errors about summation...
-        coeff = coeff / (coeff.sum(axis=1, keepdims=True) + 1E-6)
+        # end result shouldn't change
+        coeff = coeff / (coeff.sum(axis=1, keepdims=True) + 1E-3)
         idxs = [np.argmax(random_state.multinomial(1, pvals=coeff[i]))
                 for i in range(len(coeff))]
         idx = np.array(idxs)
