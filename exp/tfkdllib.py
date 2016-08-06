@@ -861,7 +861,12 @@ class midi_file_iterator(object):
         self._current_index = self.start_index
 
 
-def write_out_midi_from_duration_pitch(filename, durations, pitches):
+def duration_and_pitch_to_midi(filename, durations, pitches):
+    """
+    durations and pitches should both be 2D
+    [time_steps, n_notes]
+    """
+
     from magenta.protobuf import music_pb2
     sequence = music_pb2.NoteSequence()
 
@@ -890,12 +895,14 @@ def write_out_midi_from_duration_pitch(filename, durations, pitches):
     # ti.simultaneous_notes
     sn = 4
     # ti.time_classes
+    # this should be moved out for sure - this is really duration class, pitch!
     time_classes = [0.125, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0]
 
     dt = copy.deepcopy(durations)
     for n in range(len(time_classes)):
         dt[dt == n] = time_classes[n]
 
+    # why / 8?
     delta_times = [dt[..., i] / 8 for i in range(sn)]
     end_times = [delta_times[i].cumsum(axis=0) for i in range(sn)]
     start_times = [end_times[i] - delta_times[i] for i in range(sn)]
@@ -904,15 +911,15 @@ def write_out_midi_from_duration_pitch(filename, durations, pitches):
     midi_notes = []
     default_instrument = 0
     default_program = 0
-    sequence.total_time = float(max([end_times[i][-1, 0] for i in range(sn)]))
+    sequence.total_time = float(max([end_times[i][-1] for i in range(sn)]))
 
     assert len(delta_times[0]) == len(voices[0])
     for n in range(len(delta_times[0])):
         for i in range(len(voices)):
             # Hardcode 1 sample for now
-            v = voices[i][n, 0]
-            s = start_times[i][n, 0]
-            e = end_times[i][n, 0]
+            v = voices[i][n]
+            s = start_times[i][n]
+            e = end_times[i][n]
             if v != 0.:
                 # Skip silence voices... for now
                 # namedtuple?
@@ -937,9 +944,9 @@ def write_out_midi_from_duration_pitch(filename, durations, pitches):
 
 
 
-class tfrecord_duration_iterator(object):
+class tfrecord_duration_and_pitch_iterator(object):
     def __init__(self, files_path, minibatch_size, start_index=0,
-                 stop_index=np.inf, make_mask=True,
+                 stop_index=np.inf, make_mask=False,
                  new_file_new_sequence=False,
                  sequence_length=None,
                  randomize=True, preprocess=None,
@@ -978,6 +985,7 @@ class tfrecord_duration_iterator(object):
             et = np.array([n.end_time for n in notes]).astype("float32")
             dt = et - st
             p = np.array([n.pitch for n in notes]).astype("float32")
+
             sample_times = sorted(list(set(st)))
             # go straight for pitch and delta time encoding
             sn = self.simultaneous_notes
@@ -997,7 +1005,7 @@ class tfrecord_duration_iterator(object):
                             for ss in start_slices]
             end_slices = [es[:sn] if len(es) >= sn
                           else
-                          np.concatenate((es, np.array([es[0]] * (sn - len(es)),
+                          np.concatenate((es, np.array([max(es)] * (sn - len(es)),
                                                         dtype="float32")))
                           for es in end_slices]
             start_slices = np.array(start_slices)
@@ -1012,20 +1020,61 @@ class tfrecord_duration_iterator(object):
         if new_file_new_sequence:
             raise ValueError("Unhandled case")
         else:
+            """
+            self.time_classes = list(np.unique(np.concatenate(all_ds).ravel()))
+            ds0 = all_ds[0]
+            for n, i in enumerate(self.time_classes):
+                ds0[ds0 == i] = n
+            duration_and_pitch_to_midi("truf_b.mid", all_ds[0], all_ps[0])
+            """
+
             all_ds = np.concatenate(all_ds)
             all_ps = np.concatenate(all_ps)
+
+            """
+            self.time_classes = list(np.unique(np.concatenate(all_ds).ravel()))
+            ds0 = all_ds[:400]
+            for n, i in enumerate(self.time_classes):
+                ds0[ds0 == i] = n
+
+            duration_and_pitch_to_midi("truf_nrs.mid", ds0, all_ps[:400])
+            """
+            self._min_time_data = np.min(all_ds)
+            self._max_time_data = np.max(all_ds)
+            self.time_classes = list(np.unique(all_ds.ravel()))
+
             truncate = len(all_ds) - len(all_ds) % minibatch_size
             all_ds = all_ds[:truncate]
             all_ps = all_ps[:truncate]
+
+            """
             all_ds = all_ds.reshape(len(all_ds) // minibatch_size,
                                     minibatch_size, -1)
             all_ps = all_ps.reshape(len(all_ps) // minibatch_size,
                                     minibatch_size, -1)
+            """
+
+            # transpose necessary to preserve data structure!
+            all_ds = all_ds.transpose(1, 0)
+            all_ds = all_ds.reshape(-1, minibatch_size,
+                                    all_ds.shape[1] // minibatch_size)
+            all_ds = all_ds.transpose(2, 1, 0)
+            all_ps = all_ps.transpose(1, 0)
+            all_ps = all_ps.reshape(-1, minibatch_size,
+                                    all_ps.shape[1] // minibatch_size)
+            all_ps = all_ps.transpose(2, 1, 0)
+
+            """
+            self.time_classes = list(np.unique(np.concatenate(all_ds).ravel()))
+            ds0 = all_ds[:, 0]
+            for n, i in enumerate(self.time_classes):
+                ds0[ds0 == i] = n
+
+            duration_and_pitch_to_midi("truf_rs.mid", ds0, all_ps[:, 0])
+            """
+
             _len = len(all_ds)
             self._time_data = all_ds
-            self._min_time_data = np.min(all_ds)
-            self._max_time_data = np.max(all_ds)
-            self.time_classes = list(np.unique(all_ds.ravel()))
             self._pitch_data = all_ps
 
         self.minibatch_size = minibatch_size
@@ -1085,18 +1134,22 @@ class tfrecord_duration_iterator(object):
             time_data = time_data
             pitch_data = self._pitch_data[s:e]
 
-            # super lazy way to make a mask
-            li = list_iterator([time_data.transpose(1, 0, 2),
-                                pitch_data.transpose(1, 0, 2)], self.minibatch_size,
-                                axis=1, start_index=0,
-                                stop_index=len(time_data), make_mask=self.make_mask)
-            res = next(li)
-            # embedding elements directly?
-            # might make sense to embed based on relative context...
-            # get top self.simultaneous_notes items from piano roll
-            shp = res[0].shape
+            if self.make_mask is False:
+                res = (time_data, pitch_data)
+            else:
+                raise ValueError("Unhandled mask making")
+                # super lazy way to make a mask
+                li = list_iterator([time_data.transpose(1, 0, 2),
+                                    pitch_data.transpose(1, 0, 2)], self.minibatch_size,
+                                    axis=1, start_index=0,
+                                    stop_index=len(time_data), make_mask=self.make_mask)
+                res = next(li)
+                # embedding elements directly?
+                # might make sense to embed based on relative context...
+                # get top self.simultaneous_notes items from piano roll
+                shp = res[0].shape
             self._current_index = e
-            return res[0], res[2]
+            return res
 
     def reset(self):
         self._current_index = self.start_index

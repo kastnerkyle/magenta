@@ -6,35 +6,55 @@ from tfkdllib import Multiembedding, GRUFork, GRU, Linear, Automask
 from tfkdllib import softmax, categorical_crossentropy
 #from tfkdllib import midi_file_iterator
 from tfkdllib import run_loop
-from tfkdllib import tfrecord_duration_iterator
+from tfkdllib import tfrecord_duration_and_pitch_iterator
+from tfkdllib import duration_and_pitch_to_midi
 
 
-batch_size = 5
-sequence_length = 20
+batch_size = 2
+# sequence length of 5 is ~8 seconds
+sequence_length = 5
 
-train_itr = tfrecord_duration_iterator("BachChorales.tfrecord",
-                                       batch_size, make_mask=True,
-                                       stop_index=.9,
-                                       sequence_length=sequence_length)
+train_itr = tfrecord_duration_and_pitch_iterator("BachChorales.tfrecord",
+                                                 batch_size,
+                                                 stop_index=.05,
+                                                 sequence_length=sequence_length)
+
+"""
+durs = []
+pitches = []
+for i in range(1):
+    duration_mb, note_mb = next(train_itr)
+    durs.append(duration_mb)
+    pitches.append(note_mb)
+train_itr.reset()
+durs = np.concatenate(durs)
+pitches = np.concatenate(pitches)
+duration_and_pitch_to_midi("itr.mid", durs[:, 0], pitches[:, 0])
+raise ValueError()
+"""
+
+duration_mb, note_mb = next(train_itr)
+train_itr.reset()
 
 # TODO: Add validation set...
-valid_itr = tfrecord_duration_iterator("BachChorales.tfrecord",
-                                       batch_size, make_mask=True,
-                                       start_index=.9,
-                                       sequence_length=sequence_length)
+valid_itr = tfrecord_duration_and_pitch_iterator("BachChorales.tfrecord",
+                                                 batch_size,
+                                                 start_index=.05,
+                                                 stop_index=.1,
+                                                 sequence_length=sequence_length)
 
 duration_mb, note_mb = next(train_itr)
 train_itr.reset()
 
 num_note_features = note_mb.shape[-1]
 num_duration_features = duration_mb.shape[-1]
-num_epochs = 100
+num_epochs = 25
 n_note_symbols = len(train_itr.note_classes)
 n_duration_symbols = len(train_itr.time_classes)
 n_notes = train_itr.simultaneous_notes
 note_embed_dim = 32
 duration_embed_dim = 10
-n_dim = 1024
+n_dim = 256
 h_dim = n_dim
 note_out_dims = n_notes * [n_note_symbols]
 duration_out_dims = n_notes * [n_duration_symbols]
@@ -63,18 +83,14 @@ inp_proj, inpgate_proj = GRUFork([duration_embed, note_embed],
                                  h_dim,
                                  random_state)
 
-def step(inp_t, inpgate_t, h1_tm1, h2_tm1, h3_tm1, h4_tm1):
+def step(inp_t, inpgate_t, h1_tm1, h2_tm1):
     h1 = GRU(inp_t, inpgate_t, h1_tm1, h_dim, h_dim, random_state)
     h2 = GRU(inp_t, inpgate_t, h2_tm1, h_dim, h_dim, random_state)
-    h3 = GRU(inp_t, inpgate_t, h3_tm1, h_dim, h_dim, random_state)
-    h4 = GRU(inp_t, inpgate_t, h4_tm1, h_dim, h_dim, random_state)
-    return h1, h2, h3, h4
+    return h1, h2
 
-h1, h2, h3, h4 = scan(step, [inp_proj, inpgate_proj], [init_h1, init_h2, init_h3, init_h4])
+h1, h2 = scan(step, [inp_proj, inpgate_proj], [init_h1, init_h2])
 final_h1 = ni(h1, -1)
 final_h2 = ni(h2, -1)
-final_h3 = ni(h3, -1)
-final_h4 = ni(h4, -1)
 
 target_note_embed = Multiembedding(note_target, n_note_symbols, note_embed_dim,
                                    random_state)
@@ -87,24 +103,23 @@ costs = []
 note_preds = []
 duration_preds = []
 for i in range(n_notes):
-    note_pred = Linear([h4, target_note_masked[i]],
-                       [h_dim, n_notes * note_embed_dim],
+    note_pred = Linear([h1, h2, target_note_masked[i], target_duration_masked[i]],
+                       [h_dim, h_dim, n_notes * note_embed_dim, n_notes * duration_embed_dim],
                        note_out_dims[i], random_state, weight_norm=False)
-    duration_pred = Linear([h4, target_duration_masked[i]],
-                           [h_dim, n_notes * duration_embed_dim],
+    duration_pred = Linear([h1, h2, target_note_masked[i], target_duration_masked[i]],
+                           [h_dim, h_dim, n_notes * note_embed_dim, n_notes * duration_embed_dim],
                            duration_out_dims[i], random_state, weight_norm=False)
     n = categorical_crossentropy(softmax(note_pred), note_target[:, :, i])
     d = categorical_crossentropy(softmax(duration_pred),
                                  duration_target[:, :, i])
-    cost = tf.reduce_mean(n) + tf.reduce_mean(d)
-    """
+    #cost = tf.reduce_mean(n) + tf.reduce_mean(d)
     cost = n_duration_symbols * tf.reduce_mean(n) + n_note_symbols * tf.reduce_mean(d)
     cost /= (n_duration_symbols + n_note_symbols)
-    """
     note_preds.append(note_pred)
     duration_preds.append(duration_pred)
     costs.append(cost)
 
+# 4 notes pitch and 4 notes duration
 cost = sum(costs) / float(n_notes + n_notes)
 
 # cost in bits
@@ -116,15 +131,28 @@ opt = tf.train.AdamOptimizer(learning_rate)
 updates = opt.apply_gradients(zip(grads, params))
 
 
+i = 0
+def get_itr():
+    global i
+    i = i + 1
+    return i - 1
+
+def set_itr():
+    global i
+    i = 0
+
 def _loop(itr, sess, inits=None, do_updates=True):
     if inits is None:
         i_h1 = np.zeros((batch_size, h_dim)).astype("float32")
         i_h2 = np.zeros((batch_size, h_dim)).astype("float32")
-        i_h3 = np.zeros((batch_size, h_dim)).astype("float32")
-        i_h4 = np.zeros((batch_size, h_dim)).astype("float32")
     else:
-        i_h1, i_h2, i_h3, i_h4 = inits
-    duration_mb, note_mb = next(itr)
+        i_h1, i_h2 = inits
+    if get_itr() < 100:
+        duration_mb, note_mb = next(itr)
+        itr.reset()
+    else:
+        set_itr()
+        raise StopIteration()
     X_note_mb = note_mb[:-1]
     y_note_mb = note_mb[1:]
     X_duration_mb = duration_mb[:-1]
@@ -134,16 +162,14 @@ def _loop(itr, sess, inits=None, do_updates=True):
             duration_inpt: X_duration_mb,
             duration_target: y_duration_mb,
             init_h1: i_h1,
-            init_h2: i_h2,
-            init_h3: i_h3,
-            init_h4: i_h4}
+            init_h2: i_h2}
     if do_updates:
-        outs = [cost, final_h1, final_h2, final_h3, final_h3, updates]
-        train_loss, h1_l, h2_l, h3_l, h4_l, _ = sess.run(outs, feed)
+        outs = [cost, final_h1, final_h2, updates]
+        train_loss, h1_l, h2_l, _ = sess.run(outs, feed)
     else:
-        outs = [cost, final_h1, final_h2, final_h3, final_h4]
-        train_loss, h1_l, h2_l, h3_l, h4_l = sess.run(outs, feed)
-    return train_loss, h1_l, h2_l, h3_l, h4_l
+        outs = [cost, final_h1, final_h2]
+        train_loss, h1_l, h2_l, = sess.run(outs, feed)
+    return train_loss, h1_l, h2_l
 
 
 if __name__ == "__main__":
