@@ -10,13 +10,16 @@ from tfkdllib import tfrecord_duration_and_pitch_iterator
 from tfkdllib import duration_and_pitch_to_midi
 
 
-batch_size = 2
+num_epochs = 300
+batch_size = 10
 # sequence length of 5 is ~8 seconds
-sequence_length = 5
+sequence_length = 50
+# 20 was pretty good...
+max_mb = 1
 
 train_itr = tfrecord_duration_and_pitch_iterator("BachChorales.tfrecord",
                                                  batch_size,
-                                                 stop_index=.05,
+                                                 stop_index=.9,
                                                  sequence_length=sequence_length)
 
 """
@@ -39,8 +42,7 @@ train_itr.reset()
 # TODO: Add validation set...
 valid_itr = tfrecord_duration_and_pitch_iterator("BachChorales.tfrecord",
                                                  batch_size,
-                                                 start_index=.05,
-                                                 stop_index=.1,
+                                                 start_index=.9,
                                                  sequence_length=sequence_length)
 
 duration_mb, note_mb = next(train_itr)
@@ -48,7 +50,6 @@ train_itr.reset()
 
 num_note_features = note_mb.shape[-1]
 num_duration_features = duration_mb.shape[-1]
-num_epochs = 25
 n_note_symbols = len(train_itr.note_classes)
 n_duration_symbols = len(train_itr.time_classes)
 n_notes = train_itr.simultaneous_notes
@@ -130,7 +131,7 @@ grads = [tf.clip_by_value(grad, -grad_clip, grad_clip) for grad in grads]
 opt = tf.train.AdamOptimizer(learning_rate)
 updates = opt.apply_gradients(zip(grads, params))
 
-
+# A series of filthy hacks so I can do curriculum learning
 i = 0
 def get_itr():
     global i
@@ -146,12 +147,15 @@ def _loop(itr, sess, inits=None, do_updates=True):
         i_h1 = np.zeros((batch_size, h_dim)).astype("float32")
         i_h2 = np.zeros((batch_size, h_dim)).astype("float32")
     else:
+        # what does a convolutional model do
         i_h1, i_h2 = inits
-    if get_itr() < 100:
+    global max_mb
+    print("Current max_mb: %i" % max_mb)
+    if get_itr() < max_mb:
         duration_mb, note_mb = next(itr)
-        itr.reset()
     else:
         set_itr()
+        itr.reset()
         raise StopIteration()
     X_note_mb = note_mb[:-1]
     y_note_mb = note_mb[1:]
@@ -166,6 +170,9 @@ def _loop(itr, sess, inits=None, do_updates=True):
     if do_updates:
         outs = [cost, final_h1, final_h2, updates]
         train_loss, h1_l, h2_l, _ = sess.run(outs, feed)
+        if train_loss < 1E-2:
+            # curriculum learning
+            max_mb = max_mb + 1
     else:
         outs = [cost, final_h1, final_h2]
         train_loss, h1_l, h2_l, = sess.run(outs, feed)
@@ -175,5 +182,6 @@ def _loop(itr, sess, inits=None, do_updates=True):
 if __name__ == "__main__":
     run_loop(_loop, train_itr, valid_itr,
              n_epochs=num_epochs,
-             checkpoint_delay=10,
-             checkpoint_every_n_epochs=5)
+             skip_minimums=True,
+             checkpoint_delay=100,
+             checkpoint_every_n_epochs=100)

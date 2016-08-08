@@ -2726,7 +2726,8 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
     # If there are more than 1M minibatches per epoch this will break!
     # Not reallocating buffer greatly helps fast training models though
     # Also we have bigger problems if there are 1M minibatches per epoch...
-    # This will get sliced down to the correct number of minibatches down below
+    # This will get sliced down to the correct number of minibatches
+    # During calculations down below
     train_costs = [0.] * 1000000
     valid_costs = [0.] * 1000000
     with tf.Session() as sess:
@@ -2830,7 +2831,7 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
                     train_stop = time.time()
                     # edge case - add one since stop iteration was raised
                     # before increment
-                    train_costs = train_costs[:train_mb_count + 1]
+                    train_costs_slice = train_costs[:train_mb_count + 1]
                     logger.info(" ")
                     logger.info("Starting validation, epoch %i" % e)
                     logger.info(" ")
@@ -2869,7 +2870,7 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
                     epoch_stop = time.time()
                     # edge case - add one since stop iteration was raised
                     # before increment
-                    valid_costs = valid_costs[:valid_mb_count + 1]
+                    valid_costs_slice = valid_costs[:valid_mb_count + 1]
 
                     # Logging and tracking training statistics
                     epoch_time_delta = epoch_stop - epoch_start
@@ -2887,7 +2888,7 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
                     overall_valid_deltas.append(valid_time_delta)
                     overall_valid_times.append(valid_time_total)
 
-                    mean_epoch_train_cost = np.mean(train_costs)
+                    mean_epoch_train_cost = np.mean(train_costs_slice)
                     # np.inf trick to avoid taking the min of length 0 list
                     old_min_train_cost = min(overall_train_costs + [np.inf])
                     if np.isnan(mean_epoch_train_cost):
@@ -2897,7 +2898,7 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
                         raise ValueError("NaN detected in train")
                     overall_train_costs.append(mean_epoch_train_cost)
 
-                    mean_epoch_valid_cost = np.mean(valid_costs)
+                    mean_epoch_valid_cost = np.mean(valid_costs_slice)
                     old_min_valid_cost = min(overall_valid_costs + [np.inf])
                     if np.isnan(mean_epoch_valid_cost):
                         logger.info("Previous valid costs %s" % overall_valid_costs[-5:])
