@@ -10,12 +10,11 @@ from tfkdllib import tfrecord_duration_and_pitch_iterator
 from tfkdllib import duration_and_pitch_to_midi
 
 
-num_epochs = 300
-batch_size = 10
+num_epochs = 100
+batch_size = 32
 # sequence length of 5 is ~8 seconds
-sequence_length = 50
-# 20 was pretty good...
-max_mb = 1
+sequence_length = 40
+max_mb = 5
 
 train_itr = tfrecord_duration_and_pitch_iterator("BachChorales.tfrecord",
                                                  batch_size,
@@ -54,8 +53,8 @@ n_note_symbols = len(train_itr.note_classes)
 n_duration_symbols = len(train_itr.time_classes)
 n_notes = train_itr.simultaneous_notes
 note_embed_dim = 32
-duration_embed_dim = 10
-n_dim = 256
+duration_embed_dim = 5
+n_dim = 128
 h_dim = n_dim
 note_out_dims = n_notes * [n_note_symbols]
 duration_out_dims = n_notes * [n_duration_symbols]
@@ -71,8 +70,6 @@ note_target = tf.placeholder(tf.float32, [None, batch_size, num_note_features])
 duration_target = tf.placeholder(tf.float32, [None, batch_size, num_duration_features])
 init_h1 = tf.placeholder(tf.float32, [batch_size, h_dim])
 init_h2 = tf.placeholder(tf.float32, [batch_size, h_dim])
-init_h3 = tf.placeholder(tf.float32, [batch_size, h_dim])
-init_h4 = tf.placeholder(tf.float32, [batch_size, h_dim])
 
 duration_embed = Multiembedding(duration_inpt, n_duration_symbols, duration_embed_dim,
                                 random_state)
@@ -142,6 +139,7 @@ def set_itr():
     global i
     i = 0
 
+
 def _loop(itr, sess, inits=None, do_updates=True):
     if inits is None:
         i_h1 = np.zeros((batch_size, h_dim)).astype("float32")
@@ -150,10 +148,10 @@ def _loop(itr, sess, inits=None, do_updates=True):
         # what does a convolutional model do
         i_h1, i_h2 = inits
     global max_mb
-    print("Current max_mb: %i" % max_mb)
     if get_itr() < max_mb:
         duration_mb, note_mb = next(itr)
     else:
+        print("Current max_mb: %i" % max_mb)
         set_itr()
         itr.reset()
         raise StopIteration()
@@ -170,9 +168,6 @@ def _loop(itr, sess, inits=None, do_updates=True):
     if do_updates:
         outs = [cost, final_h1, final_h2, updates]
         train_loss, h1_l, h2_l, _ = sess.run(outs, feed)
-        if train_loss < 1E-2:
-            # curriculum learning
-            max_mb = max_mb + 1
     else:
         outs = [cost, final_h1, final_h2]
         train_loss, h1_l, h2_l, = sess.run(outs, feed)
@@ -183,5 +178,5 @@ if __name__ == "__main__":
     run_loop(_loop, train_itr, valid_itr,
              n_epochs=num_epochs,
              skip_minimums=True,
-             checkpoint_delay=100,
-             checkpoint_every_n_epochs=100)
+             checkpoint_delay=10,
+             checkpoint_every_n_epochs=5)
