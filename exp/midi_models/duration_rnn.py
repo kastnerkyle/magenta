@@ -10,30 +10,16 @@ from tfkdllib import tfrecord_duration_and_pitch_iterator
 from tfkdllib import duration_and_pitch_to_midi
 
 
-num_epochs = 100
+num_epochs = 25
 batch_size = 32
 # sequence length of 5 is ~8 seconds
 sequence_length = 40
-max_mb = 5
+max_mb = 10
 
 train_itr = tfrecord_duration_and_pitch_iterator("BachChorales.tfrecord",
                                                  batch_size,
                                                  stop_index=.9,
                                                  sequence_length=sequence_length)
-
-"""
-durs = []
-pitches = []
-for i in range(1):
-    duration_mb, note_mb = next(train_itr)
-    durs.append(duration_mb)
-    pitches.append(note_mb)
-train_itr.reset()
-durs = np.concatenate(durs)
-pitches = np.concatenate(pitches)
-duration_and_pitch_to_midi("itr.mid", durs[:, 0], pitches[:, 0])
-raise ValueError()
-"""
 
 duration_mb, note_mb = next(train_itr)
 train_itr.reset()
@@ -128,7 +114,7 @@ grads = [tf.clip_by_value(grad, -grad_clip, grad_clip) for grad in grads]
 opt = tf.train.AdamOptimizer(learning_rate)
 updates = opt.apply_gradients(zip(grads, params))
 
-# A series of filthy hacks so I can do curriculum learning
+# A series of filthy hacks so I can do resetting every so many minibatches
 i = 0
 def get_itr():
     global i
@@ -145,16 +131,14 @@ def _loop(itr, sess, inits=None, do_updates=True):
         i_h1 = np.zeros((batch_size, h_dim)).astype("float32")
         i_h2 = np.zeros((batch_size, h_dim)).astype("float32")
     else:
-        # what does a convolutional model do
-        i_h1, i_h2 = inits
-    global max_mb
-    if get_itr() < max_mb:
-        duration_mb, note_mb = next(itr)
-    else:
-        print("Current max_mb: %i" % max_mb)
-        set_itr()
-        itr.reset()
-        raise StopIteration()
+        global max_mb
+        if (get_itr() % max_mb) == 0:
+            i_h1 = np.zeros((batch_size, h_dim)).astype("float32")
+            i_h2 = np.zeros((batch_size, h_dim)).astype("float32")
+            set_itr()
+        else:
+            i_h1, i_h2 = inits
+    duration_mb, note_mb = next(itr)
     X_note_mb = note_mb[:-1]
     y_note_mb = note_mb[1:]
     X_duration_mb = duration_mb[:-1]

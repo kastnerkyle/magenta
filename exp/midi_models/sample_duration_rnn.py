@@ -99,6 +99,6 @@ if __name__ == '__main__':
     kwargs = {"model_ckpt": sys.argv[1],
               "prime": " ",
               "sample": 1,
-              "sample_len": 40,
-              "temperature": .25}
+              "sample_len": 80,
+              "temperature": .35}
     sample(kwargs)
