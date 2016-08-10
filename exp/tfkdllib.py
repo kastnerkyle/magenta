@@ -1958,6 +1958,7 @@ def Multiembedding(multi_indices, n_symbols, output_dim, random_state,
 
     Requires input indices to be 3D, with last axis being the "iteration" dimension
     """
+    # Should n_symbols be a list of embedding values?
     output_embeds = []
     shp = shape(multi_indices)
     if len(shp) != 3:

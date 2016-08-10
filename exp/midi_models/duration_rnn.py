@@ -4,12 +4,12 @@ import numpy as np
 from tfkdllib import ni, scan
 from tfkdllib import Multiembedding, GRUFork, GRU, Linear, Automask
 from tfkdllib import softmax, categorical_crossentropy
-#from tfkdllib import midi_file_iterator
 from tfkdllib import run_loop
 from tfkdllib import tfrecord_duration_and_pitch_iterator
 from tfkdllib import duration_and_pitch_to_midi
 
 
+#num_epochs = 250
 num_epochs = 50
 batch_size = 32
 # sequence length of 5 is ~8 seconds
