@@ -22,8 +22,8 @@ def sample(kwargs):
      temperature) = validate_sample_args(**kwargs)
     # Wow this is nastyyyyy
     from duration_rnn import *
-    duration_mb, note_mb = train_itr.next()
-    duration_and_pitch_to_midi("gt.mid", duration_mb[:, 0], note_mb[:, 0])
+    duration_mb, note_mb = valid_itr.next()
+    duration_and_pitch_to_midi("outputs/gt.mid", duration_mb[:, 0], note_mb[:, 0])
     train_itr.reset()
 
     with tf.Session() as sess:
@@ -38,10 +38,18 @@ def sample(kwargs):
             raise ValueError("Unable to restore from checkpoint")
         i_h1 = np.zeros((batch_size, h_dim)).astype("float32")
         i_h2 = np.zeros((batch_size, h_dim)).astype("float32")
+
+        note_mb = note_mb[:8]
+        duration_mb = duration_mb[:8]
+        duration_and_pitch_to_midi("outputs/pre.mid", duration_mb[:, 0], note_mb[:, 0])
+
+        note_inputs = note_mb[:-1]
+        duration_inputs = duration_mb[:-1]
+
+        """
         note_inputs = np.zeros((1, batch_size, train_itr.simultaneous_notes))
         duration_inputs = np.zeros((1, batch_size, train_itr.simultaneous_notes))
-        note_targets = np.zeros((1, batch_size, train_itr.simultaneous_notes))
-        duration_targets = np.zeros((1, batch_size, train_itr.simultaneous_notes))
+        """
 
         shp = note_inputs.shape
         full_notes = np.zeros((sample_len, shp[1], shp[2]), dtype="float32")
@@ -51,13 +59,12 @@ def sample(kwargs):
         full_durations[:len(duration_inputs)] = duration_inputs[:]
 
         random_state = np.random.RandomState(1999)
-        for j in range(len(note_inputs[-1]), sample_len):
-            # even predictions are note, odd are duration
-            for ni in range(2 * n_notes):
-                feed = {note_inpt: note_inputs,
-                        note_target: note_targets,
-                        duration_inpt: duration_inputs,
-                        duration_target: duration_targets,
+        for j in range(sample_len - 1):
+            if j < (len(note_inputs) - 1):
+                feed = {note_inpt: full_notes[j][None, :, :],
+                        note_target: full_notes[j + 1][None, :, :],
+                        duration_inpt: full_durations[j][None, :, :],
+                        duration_target: full_durations[j + 1][None, :, :],
                         init_h1: i_h1,
                         init_h2: i_h2}
                 outs = []
@@ -67,29 +74,45 @@ def sample(kwargs):
                 r = sess.run(outs, feed)
                 h_l = r[-2:]
                 h1_l, h2_l = h_l
-                this_preds = r[:-2]
-                this_probs = [numpy_softmax(p, temperature=temperature)
-                              for p in this_preds]
-                this_samples = [numpy_sample_softmax(p, random_state)
-                                for p in this_probs]
-                note_probs = this_probs[:n_notes]
-                duration_probs = this_probs[n_notes:]
-                si = ni // 2
-                if (ni % 2) == 0:
-                    # only put the single note in...
-                    full_notes[j, :, si] = this_samples[si].ravel()
-                    note_targets[0, :, si] = this_samples[si].ravel()
-                if (ni % 2) == 1:
-                    full_durations[j, :, si] = this_samples[si + n_notes].ravel()
-                    duration_targets[0, :, si] = this_samples[si + n_notes].ravel()
-            # priming sequence
-            note_inputs = full_notes[j:j+1]
-            duration_inputs = full_durations[j:j+1]
-            note_targets = np.zeros((1, batch_size, train_itr.simultaneous_notes))
-            duration_targets = np.zeros((1, batch_size, train_itr.simultaneous_notes))
-            i_h1 = h1_l
-            i_h2 = h2_l
-            duration_and_pitch_to_midi("temp.mid", full_durations[:, 0], full_notes[:, 0])
+                i_h1 = h1_l
+                i_h2 = h2_l
+                # Bypass sampling...
+                continue
+            else:
+                # even predictions are note, odd are duration
+                for ni in range(2 * n_notes):
+                    feed = {note_inpt: full_notes[j][None, :, :],
+                            note_target: full_notes[j + 1][None, :, :],
+                            duration_inpt: full_durations[j][None, :, :],
+                            duration_target: full_durations[j + 1][None, :, :],
+                            init_h1: i_h1,
+                            init_h2: i_h2}
+                    outs = []
+                    outs += note_preds
+                    outs += duration_preds
+                    outs += [final_h1, final_h2]
+                    r = sess.run(outs, feed)
+                    h_l = r[-2:]
+                    h1_l, h2_l = h_l
+                    this_preds = r[:-2]
+                    this_probs = [numpy_softmax(p, temperature=temperature)
+                                for p in this_preds]
+                    this_samples = [numpy_sample_softmax(p, random_state)
+                                    for p in this_probs]
+                    note_probs = this_probs[:n_notes]
+                    duration_probs = this_probs[n_notes:]
+                    si = ni // 2
+                    if (ni % 2) == 0:
+                        # only put the single note in...
+                        full_notes[j + 1, :, si] = this_samples[si].ravel()
+                    if (ni % 2) == 1:
+                        full_durations[j + 1, :, si] = this_samples[si + n_notes].ravel()
+                i_h1 = h1_l
+                i_h2 = h2_l
+
+        for n in range(full_durations.shape[1]):
+            duration_and_pitch_to_midi("outputs/temp%i.mid" % n,
+                                       full_durations[:, n], full_notes[:, n])
 
 
 if __name__ == '__main__':
@@ -99,6 +122,6 @@ if __name__ == '__main__':
     kwargs = {"model_ckpt": sys.argv[1],
               "prime": " ",
               "sample": 1,
-              "sample_len": 80,
+              "sample_len": 50,
               "temperature": .35}
     sample(kwargs)

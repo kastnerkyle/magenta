@@ -947,6 +947,7 @@ def duration_and_pitch_to_midi(filename, durations, pitches):
 class tfrecord_duration_and_pitch_iterator(object):
     def __init__(self, files_path, minibatch_size, start_index=0,
                  stop_index=np.inf, make_mask=False,
+                 make_augmentations=False,
                  new_file_new_sequence=False,
                  sequence_length=None,
                  randomize=True, preprocess=None,
@@ -1028,8 +1029,36 @@ class tfrecord_duration_and_pitch_iterator(object):
             duration_and_pitch_to_midi("truf_b.mid", all_ds[0], all_ps[0])
             """
 
-            all_ds = np.concatenate(all_ds)
-            all_ps = np.concatenate(all_ps)
+            if not make_augmentations:
+                all_ds = np.concatenate(all_ds)
+                all_ps = np.concatenate(all_ps)
+            else:
+                new_ps_list = []
+                new_ds_list = []
+                assert len(all_ds) == len(all_ps)
+                for n, (ds, ps) in enumerate(zip(all_ds, all_ps)):
+                    new_ps_list.append(ps)
+                    new_ds_list.append(ds)
+                    # Do +- 5 steps for all 11 offsets
+                    for i in range(5):
+                        new_up = ps + i
+                        # Put silences back
+                        new_up[new_up == i] = 0.
+                        # Edge case... shouldn't come up in general
+                        new_up[new_up > 88] = 88.
+                        new_down = ps - i
+                        # Put silences back
+                        new_down[new_down == -i] = 0.
+                        # Edge case... shouldn't come up in general
+                        new_down[new_down < 0.] = 1.
+
+                        new_ps_list.append(new_up)
+                        new_ds_list.append(ds)
+
+                        new_ps_list.append(new_down)
+                        new_ds_list.append(ds)
+                all_ds = np.concatenate(new_ds_list)
+                all_ps = np.concatenate(new_ps_list)
 
             """
             self.time_classes = list(np.unique(np.concatenate(all_ds).ravel()))
@@ -2733,11 +2762,10 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
     with tf.Session() as sess:
         tf.initialize_all_variables().run()
         print_network(tf.trainable_variables())
-        train_saver = tf.train.Saver(tf.all_variables())
-        valid_saver = train_saver
-        force_saver = train_saver
-        #valid_saver = tf.train.Saver(tf.all_variables())
-        #force_saver = tf.train.Saver(tf.all_variables())
+        av = tf.all_variables()
+        train_saver = tf.train.Saver(av)
+        valid_saver = tf.train.Saver(av)
+        force_saver = tf.train.Saver(av)
         """
         Session restore?
         if os.path.exists(checkpoint_path):

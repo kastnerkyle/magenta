@@ -10,11 +10,11 @@ from tfkdllib import tfrecord_duration_and_pitch_iterator
 from tfkdllib import duration_and_pitch_to_midi
 
 
-num_epochs = 25
+num_epochs = 50
 batch_size = 32
 # sequence length of 5 is ~8 seconds
 sequence_length = 40
-max_mb = 10
+reset_mb = 100
 
 train_itr = tfrecord_duration_and_pitch_iterator("BachChorales.tfrecord",
                                                  batch_size,
@@ -45,7 +45,7 @@ h_dim = n_dim
 note_out_dims = n_notes * [n_note_symbols]
 duration_out_dims = n_notes * [n_duration_symbols]
 
-learning_rate = .001
+learning_rate = .0001
 grad_clip = 5.0
 random_state = np.random.RandomState(1999)
 
@@ -132,7 +132,7 @@ def _loop(itr, sess, inits=None, do_updates=True):
         i_h2 = np.zeros((batch_size, h_dim)).astype("float32")
     else:
         global max_mb
-        if (get_itr() % max_mb) == 0:
+        if (get_itr() % reset_mb) == 0:
             i_h1 = np.zeros((batch_size, h_dim)).astype("float32")
             i_h2 = np.zeros((batch_size, h_dim)).astype("float32")
             set_itr()
@@ -161,6 +161,5 @@ def _loop(itr, sess, inits=None, do_updates=True):
 if __name__ == "__main__":
     run_loop(_loop, train_itr, valid_itr,
              n_epochs=num_epochs,
-             skip_minimums=True,
              checkpoint_delay=10,
              checkpoint_every_n_epochs=5)
