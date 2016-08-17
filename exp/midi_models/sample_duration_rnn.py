@@ -6,16 +6,18 @@ from tfkdllib import duration_and_pitch_to_midi
 
 
 def validate_sample_args(model_ckpt,
+                         runtime,
                          prime,
                          sample,
                          sample_len,
                          temperature,
                          **kwargs):
-    return (model_ckpt, prime, sample, sample_len, temperature)
+    return (model_ckpt, runtime, prime, sample, sample_len, temperature)
 
 
 def sample(kwargs):
     (model_ckpt,
+     runtime,
      prime,
      sample,
      sample_len,
@@ -23,7 +25,7 @@ def sample(kwargs):
     # Wow this is nastyyyyy
     from duration_rnn import *
     duration_mb, note_mb = valid_itr.next()
-    duration_and_pitch_to_midi("outputs/gt.mid", duration_mb[:, 0], note_mb[:, 0])
+    duration_and_pitch_to_midi("outputs/gt_%i.mid" % runtime, duration_mb[:, 0], note_mb[:, 0])
     train_itr.reset()
 
     with tf.Session() as sess:
@@ -39,12 +41,15 @@ def sample(kwargs):
         i_h1 = np.zeros((batch_size, h_dim)).astype("float32")
         i_h2 = np.zeros((batch_size, h_dim)).astype("float32")
 
-        note_mb = note_mb[:8]
-        duration_mb = duration_mb[:8]
-        duration_and_pitch_to_midi("outputs/pre.mid", duration_mb[:, 0], note_mb[:, 0])
+        prime = 8
+        note_mb = note_mb[:prime]
+        duration_mb = duration_mb[:prime]
+        for n in range(duration_mb.shape[1]):
+            duration_and_pitch_to_midi("outputs/pre%i_%i.mid" % (n, runtime),
+                                       duration_mb[:, n], note_mb[:, n], prime)
 
-        note_inputs = note_mb[:-1]
-        duration_inputs = duration_mb[:-1]
+        note_inputs = note_mb#[:-1]
+        duration_inputs = duration_mb#[:-1]
 
         """
         note_inputs = np.zeros((1, batch_size, train_itr.simultaneous_notes))
@@ -111,15 +116,22 @@ def sample(kwargs):
                 i_h2 = h2_l
 
         for n in range(full_durations.shape[1]):
-            duration_and_pitch_to_midi("outputs/temp%i.mid" % n,
-                                       full_durations[:, n], full_notes[:, n])
+            duration_and_pitch_to_midi("outputs/sampled%i_%i.mid" % (n, runtime),
+                                       full_durations[:, n], full_notes[:, n],
+                                       prime)
 
 
 if __name__ == '__main__':
     # prime is the text to prime with
     # sample is 0 for argmax, 1 for sample per character, 2 to sample per space
     import sys
+    if len(sys.argv) < 3:
+        import time
+        runtime = int(time.time())
+    else:
+        runtime = int(sys.argv[2])
     kwargs = {"model_ckpt": sys.argv[1],
+              "runtime": runtime,
               "prime": " ",
               "sample": 1,
               "sample_len": 50,

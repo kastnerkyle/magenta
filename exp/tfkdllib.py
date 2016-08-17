@@ -861,7 +861,7 @@ class midi_file_iterator(object):
         self._current_index = self.start_index
 
 
-def duration_and_pitch_to_midi(filename, durations, pitches):
+def duration_and_pitch_to_midi(filename, durations, pitches, prime_until=0):
     """
     durations and pitches should both be 2D
     [time_steps, n_notes]
@@ -911,6 +911,8 @@ def duration_and_pitch_to_midi(filename, durations, pitches):
     midi_notes = []
     default_instrument = 0
     default_program = 0
+    priming_instrument = 79
+    priming_program = 79
     sequence.total_time = float(max([end_times[i][-1] for i in range(sn)]))
 
     assert len(delta_times[0]) == len(voices[0])
@@ -923,7 +925,10 @@ def duration_and_pitch_to_midi(filename, durations, pitches):
             if v != 0.:
                 # Skip silence voices... for now
                 # namedtuple?
-                midi_notes.append((default_instrument, default_program, v, s, e))
+                if n >= prime_until:
+                    midi_notes.append((default_instrument, default_program, v, s, e))
+                else:
+                    midi_notes.append((priming_instrument, priming_program, v, s, e))
     for tup in midi_notes:
         sequence_note = sequence.notes.add()
         i = tup[0]
@@ -941,7 +946,6 @@ def duration_and_pitch_to_midi(filename, durations, pitches):
     from magenta.lib.midi_io import sequence_proto_to_pretty_midi
     pretty_midi_object = sequence_proto_to_pretty_midi(sequence)
     pretty_midi_object.write(filename)
-
 
 
 class tfrecord_duration_and_pitch_iterator(object):
@@ -1661,7 +1665,6 @@ def np_variance_scaled_uniform(shape, random_state, scale=1.):
     ----------
     Efficient Backprop
         Y. LeCun, L. Bottou, G. Orr, K. Muller
-
     """
     if type(shape[0]) is tuple:
         shp = (shape[1][0], shape[0][0]) + shape[1][1:]
@@ -2154,6 +2157,8 @@ def GRU(inp, gate_inp, previous_state, input_dim, hidden_dim, random_state,
         biases=False):
         if init is None:
             hidden_init = "ortho"
+        elif init == "normal":
+            hidden_init = "normal"
         else:
             raise ValueError("Not yet configured for other inits")
 
@@ -2283,7 +2288,7 @@ def binary_crossentropy(predicted_values, true_values):
 
 
 def categorical_crossentropy(predicted_values, true_values, class_weights=None,
-                             eps=0.):
+                             eps=None):
     """
     Multinomial negative log likelihood of predicted compared to one hot
     true_values
@@ -2297,7 +2302,7 @@ def categorical_crossentropy(predicted_values, true_values, class_weights=None,
     true_values : tensor, shape 2D or 3D
         Ground truth one hot values
 
-    eps : float, default 0
+    eps : float, default None
         Epsilon to be added during log calculation to avoid NaN values.
 
     class_weights : dictionary with form {class_index: weight)
@@ -2311,7 +2316,7 @@ def categorical_crossentropy(predicted_values, true_values, class_weights=None,
         The cost per sample, or per sample per step if 3D
 
     """
-    if eps > 0:
+    if eps != None:
         raise ValueError("Not yet implemented")
     else:
         predicted_values = tf.to_float(predicted_values)
@@ -2329,7 +2334,7 @@ def categorical_crossentropy(predicted_values, true_values, class_weights=None,
             elif len(tshp) == 2:
                 true_values = true_values[:, 0]
             else:
-                raise ValueError("Unhandled rank in squeeze")
+                raise ValueError("Unhandled dimensions in squeeze")
         tshp = shape(true_values)
         if len(tshp) == (len(pshp) - 1):
             logger.info("Changing %s to %s with one hot encoding" % (tshp, pshp))
@@ -2349,6 +2354,7 @@ def categorical_crossentropy(predicted_values, true_values, class_weights=None,
         for k, v in class_weights.items():
             cw[k] = v
         cw = cw / np.sum(cw)
+        # np.sum() cw really should be close to 1
         cw = cw / (np.sum(cw) + 1E-12)
     # expand dimensions for broadcasting
     if len(tshp) == 3:

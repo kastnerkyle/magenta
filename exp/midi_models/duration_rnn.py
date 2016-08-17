@@ -9,7 +9,6 @@ from tfkdllib import tfrecord_duration_and_pitch_iterator
 from tfkdllib import duration_and_pitch_to_midi
 
 
-#num_epochs = 250
 num_epochs = 50
 batch_size = 32
 # sequence length of 5 is ~8 seconds
@@ -96,7 +95,6 @@ for i in range(n_notes):
     n = categorical_crossentropy(softmax(note_pred), note_target[:, :, i])
     d = categorical_crossentropy(softmax(duration_pred),
                                  duration_target[:, :, i])
-    #cost = tf.reduce_mean(n) + tf.reduce_mean(d)
     cost = n_duration_symbols * tf.reduce_mean(n) + n_note_symbols * tf.reduce_mean(d)
     cost /= (n_duration_symbols + n_note_symbols)
     note_preds.append(note_pred)
