@@ -7,17 +7,19 @@ from tfkdllib import duration_and_pitch_to_midi
 
 def validate_sample_args(model_ckpt,
                          runtime,
+                         sample_path,
                          prime,
                          sample,
                          sample_len,
                          temperature,
                          **kwargs):
-    return (model_ckpt, runtime, prime, sample, sample_len, temperature)
+    return (model_ckpt, runtime, sample_path, prime, sample, sample_len, temperature)
 
 
 def sample(kwargs):
     (model_ckpt,
      runtime,
+     sample_path,
      prime,
      sample,
      sample_len,
@@ -25,7 +27,7 @@ def sample(kwargs):
     # Wow this is nastyyyyy
     from duration_rnn import *
     duration_mb, note_mb = valid_itr.next()
-    duration_and_pitch_to_midi("outputs/gt_%i.mid" % runtime, duration_mb[:, 0], note_mb[:, 0])
+    duration_and_pitch_to_midi(sample_path + "/gt_%i.mid" % runtime, duration_mb[:, 0], note_mb[:, 0])
     train_itr.reset()
 
     with tf.Session() as sess:
@@ -45,7 +47,7 @@ def sample(kwargs):
         note_mb = note_mb[:prime]
         duration_mb = duration_mb[:prime]
         for n in range(duration_mb.shape[1]):
-            duration_and_pitch_to_midi("outputs/pre%i_%i.mid" % (n, runtime),
+            duration_and_pitch_to_midi(sample_path + "/pre%i_%i.mid" % (n, runtime),
                                        duration_mb[:, n], note_mb[:, n], prime)
 
         note_inputs = note_mb#[:-1]
@@ -116,7 +118,7 @@ def sample(kwargs):
                 i_h2 = h2_l
 
         for n in range(full_durations.shape[1]):
-            duration_and_pitch_to_midi("outputs/sampled%i_%i.mid" % (n, runtime),
+            duration_and_pitch_to_midi(sample_path + "/sampled%i_%i.mid" % (n, runtime),
                                        full_durations[:, n], full_notes[:, n],
                                        prime)
 
@@ -130,8 +132,13 @@ if __name__ == '__main__':
         runtime = int(time.time())
     else:
         runtime = int(sys.argv[2])
+    if len(sys.argv) < 4:
+        sample_path = "outputs"
+    else:
+        sample_path = str(sys.argv[3])
     kwargs = {"model_ckpt": sys.argv[1],
               "runtime": runtime,
+              "sample_path": sample_path,
               "prime": " ",
               "sample": 1,
               "sample_len": 50,

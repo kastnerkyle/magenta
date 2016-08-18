@@ -61,17 +61,22 @@ duration_embed = Multiembedding(duration_inpt, n_duration_symbols, duration_embe
 
 note_embed = Multiembedding(note_inpt, n_note_symbols, note_embed_dim, random_state)
 
-inp_proj, inpgate_proj = GRUFork([duration_embed, note_embed],
-                                 [n_notes * duration_embed_dim, n_notes * note_embed_dim],
-                                 h_dim,
-                                 random_state)
+scan_inp = tf.concat(2, [duration_embed, note_embed])
 
-def step(inp_t, inpgate_t, h1_tm1, h2_tm1):
-    h1 = GRU(inp_t, inpgate_t, h1_tm1, h_dim, h_dim, random_state)
-    h2 = GRU(inp_t, inpgate_t, h2_tm1, h_dim, h_dim, random_state)
-    return h1, h2
+def step(inp_t, h1_tm1, h2_tm1):
+    inp_t_proj, inpgate_t_proj = GRUFork([inp_t],
+                                 [n_notes * duration_embed_dim + n_notes * note_embed_dim],
+                                  h_dim,
+                                  random_state)
 
-h1, h2 = scan(step, [inp_proj, inpgate_proj], [init_h1, init_h2])
+    h1_t = GRU(inp_t_proj, inpgate_t_proj,
+               h1_tm1, h_dim, h_dim, random_state)
+
+    h2_t = GRU(inp_t_proj, inpgate_t_proj,
+               h2_tm1, h_dim, h_dim, random_state)
+    return h1_t, h2_t
+
+h1, h2 = scan(step, [scan_inp], [init_h1, init_h2])
 final_h1 = ni(h1, -1)
 final_h2 = ni(h2, -1)
 
