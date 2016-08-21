@@ -50,8 +50,8 @@ def sample(kwargs):
             duration_and_pitch_to_midi(sample_path + "/pre%i_%i.mid" % (n, runtime),
                                        duration_mb[:, n], note_mb[:, n], prime)
 
-        note_inputs = note_mb#[:-1]
-        duration_inputs = duration_mb#[:-1]
+        note_inputs = note_mb
+        duration_inputs = duration_mb
 
         """
         note_inputs = np.zeros((1, batch_size, train_itr.simultaneous_notes))
@@ -67,7 +67,8 @@ def sample(kwargs):
 
         random_state = np.random.RandomState(1999)
         for j in range(sample_len - 1):
-            if j < (len(note_inputs) - 1):
+            # even predictions are note, odd are duration
+            for ni in range(2 * n_notes):
                 feed = {note_inpt: full_notes[j][None, :, :],
                         note_target: full_notes[j + 1][None, :, :],
                         duration_inpt: full_durations[j][None, :, :],
@@ -81,41 +82,24 @@ def sample(kwargs):
                 r = sess.run(outs, feed)
                 h_l = r[-2:]
                 h1_l, h2_l = h_l
-                i_h1 = h1_l
-                i_h2 = h2_l
-                # Bypass sampling...
-                continue
-            else:
-                # even predictions are note, odd are duration
-                for ni in range(2 * n_notes):
-                    feed = {note_inpt: full_notes[j][None, :, :],
-                            note_target: full_notes[j + 1][None, :, :],
-                            duration_inpt: full_durations[j][None, :, :],
-                            duration_target: full_durations[j + 1][None, :, :],
-                            init_h1: i_h1,
-                            init_h2: i_h2}
-                    outs = []
-                    outs += note_preds
-                    outs += duration_preds
-                    outs += [final_h1, final_h2]
-                    r = sess.run(outs, feed)
-                    h_l = r[-2:]
-                    h1_l, h2_l = h_l
-                    this_preds = r[:-2]
-                    this_probs = [numpy_softmax(p, temperature=temperature)
-                                for p in this_preds]
-                    this_samples = [numpy_sample_softmax(p, random_state)
-                                    for p in this_probs]
-                    note_probs = this_probs[:n_notes]
-                    duration_probs = this_probs[n_notes:]
-                    si = ni // 2
-                    if (ni % 2) == 0:
-                        # only put the single note in...
-                        full_notes[j + 1, :, si] = this_samples[si].ravel()
-                    if (ni % 2) == 1:
-                        full_durations[j + 1, :, si] = this_samples[si + n_notes].ravel()
-                i_h1 = h1_l
-                i_h2 = h2_l
+                this_preds = r[:-2]
+                this_probs = [numpy_softmax(p, temperature=temperature)
+                              for p in this_preds]
+                this_samples = [numpy_sample_softmax(p, random_state)
+                                for p in this_probs]
+                if j < (len(note_inputs) - 1):
+                    # bypass sampling for now - still in prime seq
+                    continue
+                note_probs = this_probs[:n_notes]
+                duration_probs = this_probs[n_notes:]
+                si = ni // 2
+                if (ni % 2) == 0:
+                    # only put the single note in...
+                    full_notes[j + 1, :, si] = this_samples[si].ravel()
+                if (ni % 2) == 1:
+                    full_durations[j + 1, :, si] = this_samples[si + n_notes].ravel()
+            i_h1 = h1_l
+            i_h2 = h2_l
 
         for n in range(full_durations.shape[1]):
             duration_and_pitch_to_midi(sample_path + "/sampled%i_%i.mid" % (n, runtime),

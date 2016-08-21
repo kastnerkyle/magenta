@@ -48,31 +48,40 @@ learning_rate = .0001
 grad_clip = 5.0
 random_state = np.random.RandomState(1999)
 
-duration_inpt = tf.placeholder(tf.float32, [None, batch_size, num_duration_features])
+duration_inpt = tf.placeholder(tf.float32,
+                               [None, batch_size, num_duration_features])
 note_inpt = tf.placeholder(tf.float32, [None, batch_size, num_note_features])
 
-note_target = tf.placeholder(tf.float32, [None, batch_size, num_note_features])
-duration_target = tf.placeholder(tf.float32, [None, batch_size, num_duration_features])
+note_target = tf.placeholder(tf.float32,
+                             [None, batch_size, num_note_features])
+duration_target = tf.placeholder(tf.float32,
+                                 [None, batch_size, num_duration_features])
 init_h1 = tf.placeholder(tf.float32, [batch_size, h_dim])
 init_h2 = tf.placeholder(tf.float32, [batch_size, h_dim])
 
-duration_embed = Multiembedding(duration_inpt, n_duration_symbols, duration_embed_dim,
-                                random_state)
+duration_embed = Multiembedding(duration_inpt, n_duration_symbols,
+                                duration_embed_dim, random_state)
 
-note_embed = Multiembedding(note_inpt, n_note_symbols, note_embed_dim, random_state)
+note_embed = Multiembedding(note_inpt, n_note_symbols,
+                            note_embed_dim, random_state)
 
 scan_inp = tf.concat(2, [duration_embed, note_embed])
+scan_inp_dim = n_notes * duration_embed_dim + n_notes * note_embed_dim
+
 
 def step(inp_t, h1_tm1, h2_tm1):
-    inp_t_proj, inpgate_t_proj = GRUFork([inp_t],
-                                 [n_notes * duration_embed_dim + n_notes * note_embed_dim],
-                                  h_dim,
-                                  random_state)
-
-    h1_t = GRU(inp_t_proj, inpgate_t_proj,
+    h1_t_proj, h1gate_t_proj = GRUFork([inp_t],
+                                       [scan_inp_dim],
+                                       h_dim,
+                                       random_state)
+    h1_t = GRU(h1_t_proj, h1gate_t_proj,
                h1_tm1, h_dim, h_dim, random_state)
 
-    h2_t = GRU(inp_t_proj, inpgate_t_proj,
+    h2_t_proj, h2gate_t_proj = GRUFork([inp_t],
+                                       [scan_inp_dim],
+                                       h_dim,
+                                       random_state)
+    h2_t = GRU(h2_t_proj, h2gate_t_proj,
                h2_tm1, h_dim, h_dim, random_state)
     return h1_t, h2_t
 
@@ -91,12 +100,19 @@ costs = []
 note_preds = []
 duration_preds = []
 for i in range(n_notes):
-    note_pred = Linear([h1, h2, target_note_masked[i], target_duration_masked[i]],
-                       [h_dim, h_dim, n_notes * note_embed_dim, n_notes * duration_embed_dim],
+    note_pred = Linear([h1, h2,
+                        target_note_masked[i], target_duration_masked[i]],
+                       [h_dim, h_dim,
+                        n_notes * note_embed_dim, n_notes * duration_embed_dim],
                        note_out_dims[i], random_state, weight_norm=False)
-    duration_pred = Linear([h1, h2, target_note_masked[i], target_duration_masked[i]],
-                           [h_dim, h_dim, n_notes * note_embed_dim, n_notes * duration_embed_dim],
-                           duration_out_dims[i], random_state, weight_norm=False)
+    duration_pred = Linear([h1, h2,
+                            target_note_masked[i],
+                            target_duration_masked[i]],
+                           [h_dim, h_dim,
+                            n_notes * note_embed_dim,
+                            n_notes * duration_embed_dim],
+                           duration_out_dims[i],
+                           random_state, weight_norm=False)
     n = categorical_crossentropy(softmax(note_pred), note_target[:, :, i])
     d = categorical_crossentropy(softmax(duration_pred),
                                  duration_target[:, :, i])
@@ -117,8 +133,10 @@ grads = [tf.clip_by_value(grad, -grad_clip, grad_clip) for grad in grads]
 opt = tf.train.AdamOptimizer(learning_rate)
 updates = opt.apply_gradients(zip(grads, params))
 
+# random resetting???
 # A series of filthy hacks so I can do resetting every so many minibatches
-i = 0
+# Start at 1 so it only gets reset @ 100
+i = 1
 def get_itr():
     global i
     i = i + 1
@@ -126,7 +144,7 @@ def get_itr():
 
 def set_itr():
     global i
-    i = 0
+    i = 1
 
 
 def _loop(itr, sess, inits=None, do_updates=True):
@@ -157,7 +175,7 @@ def _loop(itr, sess, inits=None, do_updates=True):
         train_loss, h1_l, h2_l, _ = sess.run(outs, feed)
     else:
         outs = [cost, final_h1, final_h2]
-        train_loss, h1_l, h2_l, = sess.run(outs, feed)
+        train_loss, h1_l, h2_l = sess.run(outs, feed)
     return train_loss, h1_l, h2_l
 
 
