@@ -2017,7 +2017,7 @@ def Linear(list_of_inputs, input_dims, output_dim, random_state, name=None,
     """
     if weight_norm is None:
         # Let other classes delegate to default of linear
-        weight_norm = True
+        weight_norm = False
     # assume both have same shape -_-
     nd = ndim(list_of_inputs[0])
     input_var = tf.concat(concat_dim=nd - 1, values=list_of_inputs)

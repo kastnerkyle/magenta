@@ -9,7 +9,7 @@ from tfkdllib import tfrecord_duration_and_pitch_iterator
 from tfkdllib import duration_and_pitch_to_midi
 
 
-num_epochs = 250
+num_epochs = 50
 batch_size = 32
 # sequence length of 5 is ~8 seconds
 sequence_length = 40
@@ -37,9 +37,9 @@ num_duration_features = duration_mb.shape[-1]
 n_note_symbols = len(train_itr.note_classes)
 n_duration_symbols = len(train_itr.time_classes)
 n_notes = train_itr.simultaneous_notes
-note_embed_dim = 16
+note_embed_dim = 32
 duration_embed_dim = 5
-n_dim = 64
+n_dim = 128
 h_dim = n_dim
 note_out_dims = n_notes * [n_note_symbols]
 duration_out_dims = n_notes * [n_duration_symbols]
@@ -77,11 +77,13 @@ def step(inp_t, h1_tm1, h2_tm1):
     h1_t = GRU(h1_t_proj, h1gate_t_proj,
                h1_tm1, h_dim, h_dim, random_state)
 
-    h2_t_proj, h2gate_t_proj = GRUFork([inp_t, h1_t],
-                                       [scan_inp_dim, h_dim],
+    """
+    h2_t_proj, h2gate_t_proj = GRUFork([inp_t],
+                                       [scan_inp_dim],
                                        h_dim,
                                        random_state)
-    h2_t = GRU(h2_t_proj, h2gate_t_proj,
+    """
+    h2_t = GRU(h1_t_proj, h1gate_t_proj,
                h2_tm1, h_dim, h_dim, random_state)
     return h1_t, h2_t
 

@@ -7,7 +7,7 @@
 # This file is then stored in a folder called local_data
 all_results_fldr=markov_chain_experiments
 mkdir -p $all_results_fldr
-for i in 2 4 6 8 10; do
+for i in 6 10 15 20; do
     for j in 0.5 1.0 20.0 1000.0; do
         python markov_lm.py data/Aird-full.abc $i $j | tee out.txt
         fldr=order_"$i"_temperature_"$j"
@@ -18,7 +18,7 @@ for i in 2 4 6 8 10; do
         # This will not work without abc2midi
         ~/abcmidi/abc2midi out.txt
         for f in *mid; do 
-            timidity $f -Ow
+            ../timidifyit.sh $f
         done
         for f in *wav; do
             name=$fldr"_"$f
