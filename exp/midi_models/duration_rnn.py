@@ -101,21 +101,24 @@ costs = []
 note_preds = []
 duration_preds = []
 for i in range(n_notes):
+    final_wn = True
     note_pred = Linear([h1,
                         scan_inp,
                         target_note_masked[i], target_duration_masked[i]],
                        [h_dim,
                         scan_inp_dim,
                         n_notes * note_embed_dim, n_notes * duration_embed_dim],
-                       note_out_dims[i], random_state, weight_norm=False)
+                       note_out_dims[i], random_state, weight_norm=final_wn)
     duration_pred = Linear([h1,
+                            scan_inp,
                             target_note_masked[i],
                             target_duration_masked[i]],
                            [h_dim,
+                            scan_inp_dim,
                             n_notes * note_embed_dim,
                             n_notes * duration_embed_dim],
                            duration_out_dims[i],
-                           random_state, weight_norm=False)
+                           random_state, weight_norm=final_wn)
     n = categorical_crossentropy(softmax(note_pred), note_target[:, :, i])
     d = categorical_crossentropy(softmax(duration_pred),
                                  duration_target[:, :, i])
