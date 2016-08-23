@@ -1878,7 +1878,7 @@ def make_numpy_weights(in_dim, out_dims, random_state, init=None,
                        scale="default"):
     """
     Will return as many things as are in the list of out_dims
-    You *must* get a list back, even for 1 element returned!
+    You *must* get a list back, even for 1 element retuTrue
     blah, = make_weights(...)
     or
     [blah] = make_weights(...)
@@ -2180,7 +2180,7 @@ def GRU(inp, gate_inp, previous_state, input_dim, hidden_dim, random_state,
         f1 = Linear([previous_state], [2 * hidden_dim], 2 * hidden_dim,
                     random_state, name=(name, "update/reset"), init=[Wur],
                     biases=biases)
-        gates = tf.sigmoid(f1 + gate_inp)
+        gates = sigmoid(f1 + gate_inp)
         update = gates[:, :dim]
         reset = gates[:, dim:]
         state_reset = previous_state * reset
@@ -2210,6 +2210,121 @@ def GRUFork(list_of_inputs, input_dims, output_dim, random_state, name=None,
         else:
             raise ValueError("Unsupported ndim")
         return d, g
+
+
+def lstm_weights(input_dim, hidden_dim, forward_init=None, hidden_init="normal",
+                 random_state=None):
+    if random_state is None:
+        raise ValueError("Must pass random_state!")
+    shape = (input_dim, hidden_dim)
+    if forward_init == "normal":
+        W = np.hstack([np_normal(shape, random_state),
+                       np_normal(shape, random_state),
+                       np_normal(shape, random_state),
+                       np_normal(shape, random_state)])
+    elif forward_init == "fan":
+        W = np.hstack([np_tanh_fan_normal(shape, random_state),
+                       np_tanh_fan_normal(shape, random_state),
+                       np_tanh_fan_normal(shape, random_state),
+                       np_tanh_fan_normal(shape, random_state)])
+    elif forward_init is None:
+        if input_dim == hidden_dim:
+            W = np.hstack([np_ortho(shape, random_state),
+                           np_ortho(shape, random_state),
+                           np_ortho(shape, random_state),
+                           np_ortho(shape, random_state)])
+        else:
+            # lecun
+            W = np.hstack([np_variance_scaled_uniform(shape, random_state),
+                           np_variance_scaled_uniform(shape, random_state),
+                           np_variance_scaled_uniform(shape, random_state),
+                           np_variance_scaled_uniform(shape, random_state)])
+    else:
+        raise ValueError("Unknown forward init type %s" % forward_init)
+    b = np_zeros((4 * shape[1],))
+    # Set forget gate bias to 1
+    b[shape[1]:2 * shape[1]] += 1.
+
+    if hidden_init == "normal":
+        U = np.hstack([np_normal((shape[1], shape[1]), random_state),
+                       np_normal((shape[1], shape[1]), random_state),
+                       np_normal((shape[1], shape[1]), random_state),
+                       np_normal((shape[1], shape[1]), random_state),])
+    elif hidden_init == "ortho":
+        U = np.hstack([np_ortho((shape[1], shape[1]), random_state),
+                       np_ortho((shape[1], shape[1]), random_state),
+                       np_ortho((shape[1], shape[1]), random_state),
+                       np_ortho((shape[1], shape[1]), random_state), ])
+    return W, b, U
+
+
+def LSTM(inp, gate_inp, previous_state, input_dim, hidden_dim, random_state,
+         mask=None, name=None, init=None, scale="default", weight_norm=None,
+         biases=False):
+        if gate_inp != "LSTMGates":
+            raise ValueError("Use LSTMFork to setup this block")
+        if init is None:
+            hidden_init = "ortho"
+        elif init == "normal":
+            hidden_init = "normal"
+        else:
+            raise ValueError("Not yet configured for other inits")
+
+        ndi = ndim(inp)
+        if mask is None:
+            if ndi == 2:
+                mask = tf.ones_like(inp)[:, :hidden_dim]
+            else:
+                raise ValueError("Unhandled ndim")
+
+        ndm = ndim(mask)
+        if ndm == (ndi - 1):
+            mask = tf.expand_dims(mask, ndm - 1)
+
+        _, _, U = lstm_weights(input_dim, hidden_dim,
+                               hidden_init=hidden_init,
+                               random_state=random_state)
+        dim = hidden_dim
+
+        def _s(p, d):
+           return p[:, d * dim:(d+1) * dim]
+
+        previous_cell = _s(previous_state, 1)
+        previous_st = _s(previous_state, 0)
+
+        preactivation = Linear([previous_st], [4 * hidden_dim],
+                                4 * hidden_dim,
+                                random_state, name=(name, "preactivation"),
+                                init=[U],
+                                biases=False) + inp
+
+        i = sigmoid(_s(preactivation, 0))
+        f = sigmoid(_s(preactivation, 1))
+        o = sigmoid(_s(preactivation, 2))
+        c = tanh(_s(preactivation, 3))
+
+        c = f * previous_cell + i * c
+        c = mask * c + (1. - mask) * previous_cell
+
+        h = o * tanh(c)
+        h = mask * h + (1. - mask) * previous_st
+
+        next_state = tf.concat(1, [h, c])
+        return next_state
+
+
+def LSTMFork(list_of_inputs, input_dims, output_dim, random_state, name=None,
+             init=None, scale="default", weight_norm=None, biases=True):
+        inp_d = np.sum(input_dims)
+        W, b, U = lstm_weights(inp_d, output_dim,
+                               random_state=random_state)
+        f_init = [W, b]
+        inputs = Linear(list_of_inputs, input_dims, 4 * output_dim,
+                        random_state=random_state,
+                        name=(name, "inputs"), init=f_init, scale=scale,
+                        weight_norm=weight_norm,
+                        biases=True)
+        return inputs, "LSTMGates"
 
 
 def logsumexp(x, axis=None):
@@ -2253,13 +2368,11 @@ def relu(x):
 
 
 def tanh(x):
-    raise ValueError("Need rewriting to TF")
     return tf.tanh(x)
 
 
 def sigmoid(x):
-    raise ValueError("Need rewriting to TF")
-    return tensor.nnet.sigmoid(x)
+    return tf.sigmoid(x)
 
 
 def binary_crossentropy(predicted_values, true_values):

@@ -3,13 +3,14 @@ import tensorflow as tf
 import numpy as np
 from tfkdllib import ni, scan
 from tfkdllib import Multiembedding, GRUFork, GRU, Linear, Automask
+from tfkdllib import LSTM, LSTMFork
 from tfkdllib import softmax, categorical_crossentropy
 from tfkdllib import run_loop
 from tfkdllib import tfrecord_duration_and_pitch_iterator
 from tfkdllib import duration_and_pitch_to_midi
 
 
-num_epochs = 50
+num_epochs = 25
 batch_size = 32
 # sequence length of 5 is ~8 seconds
 sequence_length = 40
@@ -38,8 +39,8 @@ n_note_symbols = len(train_itr.note_classes)
 n_duration_symbols = len(train_itr.time_classes)
 n_notes = train_itr.simultaneous_notes
 note_embed_dim = 32
-duration_embed_dim = 5
-n_dim = 128
+duration_embed_dim = 10
+n_dim = 256
 h_dim = n_dim
 note_out_dims = n_notes * [n_note_symbols]
 duration_out_dims = n_notes * [n_duration_symbols]
@@ -57,7 +58,6 @@ note_target = tf.placeholder(tf.float32,
 duration_target = tf.placeholder(tf.float32,
                                  [None, batch_size, num_duration_features])
 init_h1 = tf.placeholder(tf.float32, [batch_size, h_dim])
-init_h2 = tf.placeholder(tf.float32, [batch_size, h_dim])
 
 duration_embed = Multiembedding(duration_inpt, n_duration_symbols,
                                 duration_embed_dim, random_state)
@@ -69,27 +69,26 @@ scan_inp = tf.concat(2, [duration_embed, note_embed])
 scan_inp_dim = n_notes * duration_embed_dim + n_notes * note_embed_dim
 
 
-def step(inp_t, h1_tm1, h2_tm1):
-    h1_t_proj, h1gate_t_proj = GRUFork([inp_t],
+#RNNFork = LSTMFork
+#RNN = LSTM
+RNNFork = GRUFork
+RNN = GRU
+
+def step(inp_t, h1_tm1):
+    h1_t_proj, h1gate_t_proj = RNNFork([inp_t],
                                        [scan_inp_dim],
                                        h_dim,
                                        random_state)
-    h1_t = GRU(h1_t_proj, h1gate_t_proj,
+    h1_t = RNN(h1_t_proj, h1gate_t_proj,
                h1_tm1, h_dim, h_dim, random_state)
+    return h1_t
 
-    """
-    h2_t_proj, h2gate_t_proj = GRUFork([inp_t],
-                                       [scan_inp_dim],
-                                       h_dim,
-                                       random_state)
-    """
-    h2_t = GRU(h1_t_proj, h1gate_t_proj,
-               h2_tm1, h_dim, h_dim, random_state)
-    return h1_t, h2_t
-
-h1, h2 = scan(step, [scan_inp], [init_h1, init_h2])
+h1_f = scan(step, [scan_inp], [init_h1])
+h1 = h1_f
+# for now LSTM is busted
+# cut off cell...
+#h1 = h1_f[:, :, :h_dim]
 final_h1 = ni(h1, -1)
-final_h2 = ni(h2, -1)
 
 target_note_embed = Multiembedding(note_target, n_note_symbols, note_embed_dim,
                                    random_state)
@@ -102,15 +101,17 @@ costs = []
 note_preds = []
 duration_preds = []
 for i in range(n_notes):
-    note_pred = Linear([h1, h2,
+    note_pred = Linear([h1,
+                        scan_inp,
                         target_note_masked[i], target_duration_masked[i]],
-                       [h_dim, h_dim,
+                       [h_dim,
+                        scan_inp_dim,
                         n_notes * note_embed_dim, n_notes * duration_embed_dim],
                        note_out_dims[i], random_state, weight_norm=False)
-    duration_pred = Linear([h1, h2,
+    duration_pred = Linear([h1,
                             target_note_masked[i],
                             target_duration_masked[i]],
-                           [h_dim, h_dim,
+                           [h_dim,
                             n_notes * note_embed_dim,
                             n_notes * duration_embed_dim],
                            duration_out_dims[i],
@@ -152,15 +153,13 @@ def set_itr():
 def _loop(itr, sess, inits=None, do_updates=True):
     if inits is None:
         i_h1 = np.zeros((batch_size, h_dim)).astype("float32")
-        i_h2 = np.zeros((batch_size, h_dim)).astype("float32")
     else:
         global max_mb
         if (get_itr() % reset_mb) == 0:
             i_h1 = np.zeros((batch_size, h_dim)).astype("float32")
-            i_h2 = np.zeros((batch_size, h_dim)).astype("float32")
             set_itr()
         else:
-            i_h1, i_h2 = inits
+            i_h1 = inits[0]
     duration_mb, note_mb = next(itr)
     X_note_mb = note_mb[:-1]
     y_note_mb = note_mb[1:]
@@ -170,15 +169,14 @@ def _loop(itr, sess, inits=None, do_updates=True):
             note_target: y_note_mb,
             duration_inpt: X_duration_mb,
             duration_target: y_duration_mb,
-            init_h1: i_h1,
-            init_h2: i_h2}
+            init_h1: i_h1}
     if do_updates:
-        outs = [cost, final_h1, final_h2, updates]
-        train_loss, h1_l, h2_l, _ = sess.run(outs, feed)
+        outs = [cost, final_h1, updates]
+        train_loss, h1_l, _ = sess.run(outs, feed)
     else:
-        outs = [cost, final_h1, final_h2]
-        train_loss, h1_l, h2_l = sess.run(outs, feed)
-    return train_loss, h1_l, h2_l
+        outs = [cost, final_h1]
+        train_loss, h1_l = sess.run(outs, feed)
+    return train_loss, h1_l
 
 
 if __name__ == "__main__":

@@ -41,7 +41,6 @@ def sample(kwargs):
         else:
             raise ValueError("Unable to restore from checkpoint")
         i_h1 = np.zeros((batch_size, h_dim)).astype("float32")
-        i_h2 = np.zeros((batch_size, h_dim)).astype("float32")
 
         prime = 8
         note_mb = note_mb[:prime]
@@ -73,16 +72,15 @@ def sample(kwargs):
                         note_target: full_notes[j + 1][None, :, :],
                         duration_inpt: full_durations[j][None, :, :],
                         duration_target: full_durations[j + 1][None, :, :],
-                        init_h1: i_h1,
-                        init_h2: i_h2}
+                        init_h1: i_h1}
                 outs = []
                 outs += note_preds
                 outs += duration_preds
-                outs += [final_h1, final_h2]
+                outs += [final_h1]
                 r = sess.run(outs, feed)
-                h_l = r[-2:]
-                h1_l, h2_l = h_l
-                this_preds = r[:-2]
+                h_l = r[-1:]
+                h1_l = h_l[-1]
+                this_preds = r[:-1]
                 this_probs = [numpy_softmax(p, temperature=temperature)
                               for p in this_preds]
                 this_samples = [numpy_sample_softmax(p, random_state)
@@ -99,7 +97,6 @@ def sample(kwargs):
                 if (ni % 2) == 1:
                     full_durations[j + 1, :, si] = this_samples[si + n_notes].ravel()
             i_h1 = h1_l
-            i_h2 = h2_l
 
         for n in range(full_durations.shape[1]):
             duration_and_pitch_to_midi(sample_path + "/sampled%i_%i.mid" % (n, runtime),
