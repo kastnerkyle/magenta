@@ -2261,6 +2261,12 @@ def lstm_weights(input_dim, hidden_dim, forward_init=None, hidden_init="normal",
 def LSTM(inp, gate_inp, previous_state, input_dim, hidden_dim, random_state,
          mask=None, name=None, init=None, scale="default", weight_norm=None,
          biases=False):
+        """
+        Output is the concatenation of hidden state and cell
+        so 2 * hidden dim
+        will need to slice yourself, or handle in some way
+        This was done specifically to have the GRU, LSTM activations swappable
+        """
         if gate_inp != "LSTMGates":
             raise ValueError("Use LSTMFork to setup this block")
         if init is None:
@@ -2298,23 +2304,27 @@ def LSTM(inp, gate_inp, previous_state, input_dim, hidden_dim, random_state,
                                 init=[U],
                                 biases=False) + inp
 
-        i = sigmoid(_s(preactivation, 0))
-        f = sigmoid(_s(preactivation, 1))
-        o = sigmoid(_s(preactivation, 2))
-        c = tanh(_s(preactivation, 3))
+        ig = sigmoid(_s(preactivation, 0))
+        fg = sigmoid(_s(preactivation, 1))
+        og = sigmoid(_s(preactivation, 2))
+        cg = tanh(_s(preactivation, 3))
 
-        c = f * previous_cell + i * c
-        c = mask * c + (1. - mask) * previous_cell
+        cg = fg * previous_cell + ig * cg
+        cg = mask * cg + (1. - mask) * previous_cell
 
-        h = o * tanh(c)
-        h = mask * h + (1. - mask) * previous_st
+        hg = og * tanh(cg)
+        hg = mask * hg + (1. - mask) * previous_st
 
-        next_state = tf.concat(1, [h, c])
+        next_state = tf.concat(1, [hg, cg])
         return next_state
 
 
 def LSTMFork(list_of_inputs, input_dims, output_dim, random_state, name=None,
              init=None, scale="default", weight_norm=None, biases=True):
+        """
+        output dim should be the hidden size for each gate
+        overall size will be 4x
+        """
         inp_d = np.sum(input_dims)
         W, b, U = lstm_weights(inp_d, output_dim,
                                random_state=random_state)

@@ -40,7 +40,7 @@ def sample(kwargs):
             saver.restore(sess, ckpt.model_checkpoint_path)
         else:
             raise ValueError("Unable to restore from checkpoint")
-        i_h1 = np.zeros((batch_size, h_dim)).astype("float32")
+        i_h1 = np.zeros((batch_size, rnn_dim)).astype("float32")
 
         prime = 8
         note_mb = note_mb[:prime]

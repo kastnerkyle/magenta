@@ -45,6 +45,19 @@ h_dim = n_dim
 note_out_dims = n_notes * [n_note_symbols]
 duration_out_dims = n_notes * [n_duration_symbols]
 
+rnn_type = "lstm"
+
+if rnn_type == "lstm":
+    RNNFork = LSTMFork
+    RNN = LSTM
+    rnn_dim = 2 * h_dim
+elif rnn_type == "gru":
+    RNNFork = GRUFork
+    RNN = GRU
+    rnn_dim = h_dim
+else:
+    raise ValueError("Unknown rnn_type %s" % rnn_type)
+
 learning_rate = .0001
 grad_clip = 5.0
 random_state = np.random.RandomState(1999)
@@ -57,7 +70,7 @@ note_target = tf.placeholder(tf.float32,
                              [None, batch_size, num_note_features])
 duration_target = tf.placeholder(tf.float32,
                                  [None, batch_size, num_duration_features])
-init_h1 = tf.placeholder(tf.float32, [batch_size, h_dim])
+init_h1 = tf.placeholder(tf.float32, [batch_size, rnn_dim])
 
 duration_embed = Multiembedding(duration_inpt, n_duration_symbols,
                                 duration_embed_dim, random_state)
@@ -68,11 +81,6 @@ note_embed = Multiembedding(note_inpt, n_note_symbols,
 scan_inp = tf.concat(2, [duration_embed, note_embed])
 scan_inp_dim = n_notes * duration_embed_dim + n_notes * note_embed_dim
 
-
-#RNNFork = LSTMFork
-#RNN = LSTM
-RNNFork = GRUFork
-RNN = GRU
 
 def step(inp_t, h1_tm1):
     h1_t_proj, h1gate_t_proj = RNNFork([inp_t],
@@ -87,7 +95,6 @@ h1_f = scan(step, [scan_inp], [init_h1])
 h1 = h1_f
 # for now LSTM is busted
 # cut off cell...
-#h1 = h1_f[:, :, :h_dim]
 final_h1 = ni(h1, -1)
 
 target_note_embed = Multiembedding(note_target, n_note_symbols, note_embed_dim,
@@ -101,15 +108,15 @@ costs = []
 note_preds = []
 duration_preds = []
 for i in range(n_notes):
-    final_wn = True
-    note_pred = Linear([h1,
+    final_wn = False
+    note_pred = Linear([h1[:, :, :h_dim],
                         scan_inp,
                         target_note_masked[i], target_duration_masked[i]],
                        [h_dim,
                         scan_inp_dim,
                         n_notes * note_embed_dim, n_notes * duration_embed_dim],
                        note_out_dims[i], random_state, weight_norm=final_wn)
-    duration_pred = Linear([h1,
+    duration_pred = Linear([h1[:, :, :h_dim],
                             scan_inp,
                             target_note_masked[i],
                             target_duration_masked[i]],
@@ -136,7 +143,7 @@ cost = sum(costs) / float(n_notes + n_notes)
 params = tf.trainable_variables()
 grads = tf.gradients(cost, params)
 grads = [tf.clip_by_value(grad, -grad_clip, grad_clip) for grad in grads]
-opt = tf.train.AdamOptimizer(learning_rate)
+opt = tf.train.AdamOptimizer(learning_rate, use_locking=True)
 updates = opt.apply_gradients(zip(grads, params))
 
 # random resetting???
@@ -155,11 +162,11 @@ def set_itr():
 
 def _loop(itr, sess, inits=None, do_updates=True):
     if inits is None:
-        i_h1 = np.zeros((batch_size, h_dim)).astype("float32")
+        i_h1 = np.zeros((batch_size, rnn_dim)).astype("float32")
     else:
         global max_mb
         if (get_itr() % reset_mb) == 0:
-            i_h1 = np.zeros((batch_size, h_dim)).astype("float32")
+            i_h1 = np.zeros((batch_size, rnn_dim)).astype("float32")
             set_itr()
         else:
             i_h1 = inits[0]
@@ -173,7 +180,7 @@ def _loop(itr, sess, inits=None, do_updates=True):
             duration_inpt: X_duration_mb,
             duration_target: y_duration_mb,
             init_h1: i_h1}
-    if do_updates:
+    if True:
         outs = [cost, final_h1, updates]
         train_loss, h1_l, _ = sess.run(outs, feed)
     else:
