@@ -1,5 +1,5 @@
-# License: BSD 3-clause
-# Authors: Kyle Kastner
+# License: Apache 2.0
+# Authors: Tensorflow Authors
 from __future__ import print_function
 import numpy as np
 import uuid
@@ -14,6 +14,7 @@ import re
 import copy
 import time
 import sys
+import uuid
 try:
     from StringIO import StringIO
 except ImportError:
@@ -33,6 +34,7 @@ try:
 except ImportError:
     import urllib2 as urllib
 import logging
+from collections import OrderedDict
 
 sys.setrecursionlimit(40000)
 
@@ -91,6 +93,7 @@ def ndim(x):
     return len(shape(x))
 
 
+# TODO: How can I correct this for shared / tied weights?
 def print_network(params):
     n_params = sum([np.prod(shape(p)) for p in params])
     logger.info("Total number of parameters: %fM" % (n_params / float(1E6)))
@@ -239,628 +242,6 @@ end metautils
 """
 begin datasets
 """
-
-
-def soundsc(X, copy=True):
-    """
-    Approximate implementation of soundsc from MATLAB without the audio playing.
-
-    Parameters
-    ----------
-    X : ndarray
-        Signal to be rescaled
-
-    copy : bool, optional (default=True)
-        Whether to make a copy of input signal or operate in place.
-
-    Returns
-    -------
-    X_sc : ndarray
-        (-1, 1) scaled version of X as int16, suitable for writing
-        with scipy.io.wavfile
-    """
-    X = np.array(X, copy=copy)
-    X = (X - X.min()) / (X.max() - X.min())
-    X = 2 * X - 1
-    X = .9 * X
-    X = X * 2 ** 15
-    return X.astype('int16')
-
-
-def _wav2array(nchannels, sampwidth, data):
-    # wavio.py
-    # Author: Warren Weckesser
-    # License: BSD 3-Clause (http://opensource.org/licenses/BSD-3-Clause)
-
-    """data must be the string containing the bytes from the wav file."""
-    num_samples, remainder = divmod(len(data), sampwidth * nchannels)
-    if remainder > 0:
-        raise ValueError('The length of data is not a multiple of '
-                         'sampwidth * num_channels.')
-    if sampwidth > 4:
-        raise ValueError("sampwidth must not be greater than 4.")
-
-    if sampwidth == 3:
-        a = np.empty((num_samples, nchannels, 4), dtype=np.uint8)
-        raw_bytes = np.fromstring(data, dtype=np.uint8)
-        a[:, :, :sampwidth] = raw_bytes.reshape(-1, nchannels, sampwidth)
-        a[:, :, sampwidth:] = (a[:, :, sampwidth - 1:sampwidth] >> 7) * 255
-        result = a.view('<i4').reshape(a.shape[:-1])
-    else:
-        # 8 bit samples are stored as unsigned ints; others as signed ints.
-        dt_char = 'u' if sampwidth == 1 else 'i'
-        a = np.fromstring(data, dtype='<%s%d' % (dt_char, sampwidth))
-        result = a.reshape(-1, nchannels)
-    return result
-
-
-def readwav(file):
-    # wavio.py
-    # Author: Warren Weckesser
-    # License: BSD 3-Clause (http://opensource.org/licenses/BSD-3-Clause)
-    """
-    Read a wav file.
-
-    Returns the frame rate, sample width (in bytes) and a numpy array
-    containing the data.
-
-    This function does not read compressed wav files.
-    """
-    wav = wave.open(file)
-    rate = wav.getframerate()
-    nchannels = wav.getnchannels()
-    sampwidth = wav.getsampwidth()
-    nframes = wav.getnframes()
-    data = wav.readframes(nframes)
-    wav.close()
-    array = _wav2array(nchannels, sampwidth, data)
-    return rate, sampwidth, array
-
-
-class base_iterator(object):
-    # base class don't use directly
-    def __init__(self, list_of_containers, minibatch_size,
-                 axis,
-                 start_index=0,
-                 stop_index=np.inf,
-                 randomize=False,
-                 make_mask=False,
-                 one_hot_class_size=None):
-        self.list_of_containers = list_of_containers
-        self.minibatch_size = minibatch_size
-        self.make_mask = make_mask
-        self.start_index = start_index
-        self.stop_index = stop_index
-        self.randomize = randomize
-        self.slice_start_ = start_index
-        self.axis = axis
-        if axis not in [0, 1]:
-            raise ValueError("Unknown sample_axis setting %i" % axis)
-        self.one_hot_class_size = one_hot_class_size
-        self.random_state = np.random.RandomState(2017)
-        len0 = len(list_of_containers[0])
-        assert all([len(ci) == len0 for ci in list_of_containers])
-        if one_hot_class_size is not None:
-            assert len(self.one_hot_class_size) == len(list_of_containers)
-
-    def reset(self):
-        self.slice_start_ = self.start_index
-        if self.randomize:
-            start_ind = self.start_index
-            stop_ind = min(len(self.list_of_containers[0]), self.stop_index)
-            inds = np.arange(start_ind, stop_ind).astype("int32")
-            # If start index is > 0 then pull some mad hackery to only shuffle
-            # the end part - eg. validation set.
-            self.random_state.shuffle(inds)
-            if start_ind > 0:
-                orig_inds = np.arange(0, start_ind).astype("int32")
-                inds = np.concatenate((orig_inds, inds))
-            new_list_of_containers = []
-            for ci in self.list_of_containers:
-                nci = [ci[i] for i in inds]
-                if isinstance(ci, np.ndarray):
-                    nci = np.array(nci)
-                new_list_of_containers.append(nci)
-            self.list_of_containers = new_list_of_containers
-
-    def __iter__(self):
-        return self
-
-    def next(self):
-        return self.__next__()
-
-    def __next__(self):
-        self.slice_end_ = self.slice_start_ + self.minibatch_size
-        if self.slice_end_ > self.stop_index:
-            # TODO: Think about boundary issues with weird shaped last mb
-            self.reset()
-            raise StopIteration("Stop index reached")
-        ind = slice(self.slice_start_, self.slice_end_)
-        self.slice_start_ = self.slice_end_
-        if self.make_mask is False:
-            res = self._slice_without_masks(ind)
-            if not all([self.minibatch_size in r.shape for r in res]):
-                # TODO: Check that things are even
-                self.reset()
-                raise StopIteration("Partial slice returned, end of iteration")
-            return res
-        else:
-            res = self._slice_with_masks(ind)
-            # TODO: Check that things are even
-            if not all([self.minibatch_size in r.shape for r in res]):
-                self.reset()
-                raise StopIteration("Partial slice returned, end of iteration")
-            return res
-
-    def _slice_without_masks(self, ind):
-        raise AttributeError("Subclass base_iterator and override this method")
-
-    def _slice_with_masks(self, ind):
-        raise AttributeError("Subclass base_iterator and override this method")
-
-
-class list_iterator(base_iterator):
-    # For "list of arrays" data
-    def _slice_without_masks(self, ind):
-        sliced_c = []
-        for c in self.list_of_containers:
-            slc = c[ind]
-            arr = np.asarray(slc)
-            sliced_c.append(arr)
-        if min([len(i) for i in sliced_c]) < self.minibatch_size:
-            self.reset()
-            raise StopIteration("Invalid length slice")
-        for n in range(len(sliced_c)):
-            sc = sliced_c[n]
-            if self.one_hot_class_size is not None:
-                convert_it = self.one_hot_class_size[n]
-                if convert_it is not None:
-                    raise ValueError("One hot conversion not implemented")
-            if not isinstance(sc, np.ndarray) or sc.dtype == np.object:
-                maxlen = max([len(i) for i in sc])
-                # Assume they at least have the same internal dtype
-                if len(sc[0].shape) > 1:
-                    total_shape = (maxlen, sc[0].shape[1])
-                elif len(sc[0].shape) == 1:
-                    total_shape = (maxlen, 1)
-                else:
-                    raise ValueError("Unhandled array size in list")
-                if self.axis == 0:
-                    raise ValueError("Unsupported axis of iteration")
-                    new_sc = np.zeros((len(sc), total_shape[0],
-                                       total_shape[1]))
-                    new_sc = new_sc.squeeze().astype(sc[0].dtype)
-                else:
-                    new_sc = np.zeros((total_shape[0], len(sc),
-                                       total_shape[1]))
-                    new_sc = new_sc.astype(sc[0].dtype)
-                    for m, sc_i in enumerate(sc):
-                        new_sc[:len(sc_i), m, :] = sc_i
-                sliced_c[n] = new_sc
-            else:
-                # Hit this case if all sequences are the same length
-                if self.axis == 1:
-                    sliced_c[n] = sc.transpose(1, 0, 2)
-        return sliced_c
-
-    def _slice_with_masks(self, ind):
-        cs = self._slice_without_masks(ind)
-        if self.axis == 0:
-            ms = [np.ones_like(c[:, 0]) for c in cs]
-            raise ValueError("NYI - see axis=0 case for ideas")
-            sliced_c = []
-            for n, c in enumerate(self.list_of_containers):
-                slc = c[ind]
-                for ii, si in enumerate(slc):
-                    ms[n][ii, len(si):] = 0.
-        elif self.axis == 1:
-            ms = [np.ones_like(c[:, :, 0]) for c in cs]
-            sliced_c = []
-            for n, c in enumerate(self.list_of_containers):
-                slc = c[ind]
-                for ii, si in enumerate(slc):
-                    ms[n][len(si):, ii] = 0.
-        assert len(cs) == len(ms)
-        return [i for sublist in list(zip(cs, ms)) for i in sublist]
-
-# Taken from
-# http://stackoverflow.com/a/27518377
-# A cool generator for counting the total number of lines in a file
-
-
-def _make_gen(reader):
-    b = reader(1024 * 1024)
-    while b:
-        yield b
-        b = reader(1024*1024)
-
-if sys.version_info >= (3, 0):
-    def raw_gen_count(filename):
-        f = open(filename, 'rb')
-        f_gen = _make_gen(f.raw.read)
-        return sum(buf.count(b'\n') for buf in f_gen)
-else:
-    def raw_gen_count(filename):
-        f = open(filename, 'rb')
-        f_gen = _make_gen(f.read)
-        return sum(buf.count(b'\n') for buf in f_gen)
-
-
-class character_file_iterator(object):
-    def __init__(self, file_path, minibatch_size, start_index=0,
-                 stop_index=np.inf, make_mask=True,
-                 new_line_new_sequence=False,
-                 sequence_length=None,
-                 randomize=True, preprocess=None,
-                 preprocess_kwargs={}):
-        """
-        Supports regular int, negative indexing, or float for setting
-        stop_index
-        Two "modes":
-            new_line_new_sequence will do variable length minibatches based
-            on newlines in the file
-
-            without new_line_new_sequence the file is effectively one continuous
-            stream, and minibatches will be sequence_length, batch_size, 1
-        """
-        self.minibatch_size = minibatch_size
-        self.new_line_new_sequence = new_line_new_sequence
-        self.sequence_length = sequence_length
-        # this is weird and bad - holding file open?
-        self.file_handle = open(file_path, mode="r")
-        if randomize:
-            self.random_state = np.random.RandomState(2177)
-        self.make_mask = make_mask
-        ext = file_path.split(".")[-1]
-        if new_line_new_sequence and sequence_length is None:
-            raise ValueError("sequence_length must be provided if",
-                             "new_line_new_sequence is False!")
-        # handle extensions like .gz?
-        if ext == "txt":
-            def _read():
-                if self.new_line_new_sequence:
-                    d = self.file_handle.readline()
-                else:
-                    d = self.file_handle.read(sequence_length)
-                return d
-        else:
-            raise ValueError("Unhandled extension %s" % ext)
-        self._read_file = _read
-        vocabulary = "abcdefghijklmnopqrstuvwxyz"
-        vocabulary += "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-        vocabulary += "1234567890"
-        vocabulary += ".?!,;:'()-&*#$%@+_="
-        vocabulary += "\n\t "
-        self.vocabulary_size = len(vocabulary)
-        v2k = {k: v for v, k in enumerate(vocabulary)}
-        k2v = {v: k for k, v in v2k.items()}
-
-        def tf(x):
-            lu = [[v2k[xii] for xii in xi] for xi in x]
-            # assumes even...
-            r = np.array([np.array(lui, dtype="float32")[:, None] for lui in lu])
-            return r.transpose(1, 0, 2)
-
-        self.transform = tf
-
-        def itf(x):
-            x = x.transpose(1, 0, 2)
-            return ["".join([k2v[int(xii.ravel())] for xii in xi]) for xi in x]
-
-        self.inverse_transform = itf
-
-        if self.new_line_new_sequence:
-            _len = raw_gen_count(file_path)
-        else:
-            # THIS ASSUMES 1 BYTE PER CHAR
-            # LETS PRETEND UTF8 IS NOT A THING
-            _len = os.path.getsize(file_path)
-        if stop_index >= 1:
-            self.stop_index = int(min(stop_index, _len))
-        elif stop_index > 0:
-            # percentage
-            self.stop_index = int(stop_index * _len)
-        elif stop_index < 0:
-            # negative index - must be int!
-            self.stop_index = _len + int(stop_index)
-
-        self.start_index = start_index
-        if start_index != 0:
-            raise ValueError("Currently unable to handle start point != 0")
-
-        """
-        if start_index < 0:
-            # negative indexing
-            self.start_index = _len + start_index
-        elif start_index < 1:
-            # float
-            self.start_index = int(start_index * _len)
-        else:
-            # regular
-            self.start_index = int(start_index)
-        """
-        if self.start_index >= self.stop_index:
-            ss = "Invalid indexes - stop "
-            ss += "%s <= start %s !" % (self.stop_index, self.start_index)
-            raise ValueError(ss)
-        self._current_index = self.start_index
-
-    def __iter__(self):
-        return self
-
-    def next(self):
-        return self.__next__()
-
-    def __next__(self):
-        s = self._current_index
-        if self.new_line_new_sequence:
-            raise ValueError("BROKEN, NEEDS FIX")
-            e = self._current_index + self.minibatch_size
-            if e > self.stop_index:
-                raise StopIteration("End of character file iterator reached!")
-            data = [self._read_file() for fp in range(s, e)]
-            data = [np.array(self.preprocess_function(d), dtype="float32")[:, None]
-                    for d in data]
-
-            li = list_iterator([data], self.minibatch_size, axis=1,
-                               start_index=0,
-                               stop_index=len(data), make_mask=self.make_mask)
-            res = next(li)
-            self._current_index = e
-            return res
-        else:
-            e = s + self.minibatch_size * self.sequence_length
-            if e > self.stop_index:
-                raise StopIteration("End of character file iterator reached!")
-            data = [self._read_file() for fp in range(self.minibatch_size)]
-            data = self.transform(data)
-            li = list_iterator([data.transpose(1, 0, 2)], self.minibatch_size, axis=1, start_index=0,
-                               stop_index=len(data), make_mask=self.make_mask)
-            res = next(li)
-            self._current_index = e
-            return res
-
-    def reset(self):
-        self._current_index = self.start_index
-        self.file_handle.seek(0)
-
-
-def file_to_piano_roll(file_path, sample_dur=None):
-    from music21 import converter, graph, pitch, meter, tempo, stream
-    pf = converter.parse(file_path)
-    g = graph.PlotHorizontalBarPitchSpaceOffset(pf)
-    durs = [float(repr(pf.flat.notes[i].duration).split(" ")[-1][:-1])
-            for i in range(len(pf.flat.notes))]
-    if sample_dur is not None:
-        min_dur = min(durs)
-    else:
-        min_dur = sample_dur
-
-    # hacked together from music21 mailing list
-    # https://groups.google.com/forum/#!topic/music21list/1mMMrzHUUTk
-    def graph_to_pianoroll(graph_obj, window_size=min_dur / 4):
-        data_matrix = []
-        for item in graph_obj.data:
-            if item[0] != "":
-                for subitem in item[1]:
-                    data_matrix.append((item[0], subitem[0], subitem[1]))
-        data_matrix = np.array(data_matrix)
-        last_bar = max(data_matrix[:, 1])
-
-        sr = 1. / window_size
-        time_size = int((float(last_bar) + 1) * sr)
-        if time_size < 1:
-            raise ValueError("Window size too small!")
-        # 128? Why...
-        piano_roll = np.zeros((128, time_size))
-        for event in data_matrix:
-            p = event[0]
-            p = p.replace("\\", "")
-            p = p.replace("$", "")
-            start_idx = int(float(event[1]) * sr)
-            stop_idx = start_idx + int(float(event[2]) * sr)
-            piano_roll[pitch.Pitch(p).midi, start_idx:stop_idx] = 1
-        return piano_roll
-    pr = graph_to_pianoroll(g)
-    return pr, min_dur
-
-
-# modified from
-# https://raw.githubusercontent.com/hexahedria/biaxial-rnn-music-composition/master/midi_to_statematrix.py
-# Original license: BSD 2-Clause
-def piano_roll_to_midi(filename, piano_roll):
-    import midi
-
-    state_matrix = np.asarray(piano_roll)
-    pattern = midi.Pattern()
-    track = midi.Track()
-    pattern.append(track)
-
-    tickscale = 16
-
-    #TODO: add decay? or look into a smarter synthesizer
-    last_cmd_ti = 0
-    prev_state = np.zeros_like(piano_roll[0])
-    for ti, state in enumerate(state_matrix):
-        off_notes = []
-        on_notes = []
-        deltas = state - prev_state
-        deltas = deltas[1:]
-        up = np.where(deltas > 0)[0]
-        down = np.where(deltas < 0)[0]
-
-        for i in down:
-            off_notes.append(i)
-
-        for i in up:
-            on_notes.append(i)
-
-        for note in off_notes:
-            off_event_tick = (ti - last_cmd_ti) * tickscale
-            off_event_pitch = note + 0
-            track.append(midi.NoteOffEvent(tick=off_event_tick,
-                                           pitch=off_event_pitch))
-            last_cmd_ti = ti
-        for note in on_notes:
-            on_event_tick = (ti - last_cmd_ti) * tickscale
-            v = 40
-            on_event_pitch = note + 0
-            track.append(midi.NoteOnEvent(tick=on_event_tick,
-                                          velocity=v,
-                                          pitch=on_event_pitch))
-            last_cmd_ti = ti
-        prev_state = state
-
-    eot = midi.EndOfTrackEvent(tick=1)
-    track.append(eot)
-    midi.write_midifile(filename, pattern)
-
-
-def notes_to_midi(filename, notes):
-    # + 1 to simplify silence
-    piano_roll = np.zeros((len(notes), 88 + 1)).astype("float32")
-    for n in range(len(notes)):
-        idx = notes[n].astype("int32")
-        piano_roll[n, idx] = 1.
-    # cut off silence
-    piano_roll = piano_roll[:, 1:]
-    piano_roll_to_midi(filename, piano_roll)
-
-
-class midi_file_iterator(object):
-    def __init__(self, files_path, minibatch_size, start_index=0,
-                 stop_index=np.inf, make_mask=True,
-                 new_file_new_sequence=False,
-                 sequence_length=None,
-                 randomize=True, preprocess=None,
-                 preprocess_kwargs={}):
-        """
-        Supports regular int, negative indexing, or float for setting
-        stop_index
-        Two "modes":
-            new_line_new_sequence will do variable length minibatches based
-            on newlines in the file
-
-            without new_line_new_sequence the file is effectively one continuous
-            stream, and minibatches will be sequence_length, batch_size, 1
-        """
-        # how to get time signature? files corrupted
-        # ts = pf.getElementsByClass(meter.TimeSignature)[0]
-        # met = pf.getElementsByClass(tempo.MetronomeMark)[0]
-
-        self.minibatch_size = minibatch_size
-        self.new_file_new_sequence = new_file_new_sequence
-        self.sequence_length = sequence_length
-        if randomize:
-            self.random_state = np.random.RandomState(2177)
-        self.make_mask = make_mask
-        if new_file_new_sequence and sequence_length is None:
-            raise ValueError("sequence_length must be provided if",
-                             "new_line_new_sequence is False!")
-
-        files = glob.glob(files_path)
-
-        # Ew, hardcode bach for now...
-        a = [file_to_piano_roll(f, sample_dur=1.25) for f in files]
-        min_durs = [aa[1] for aa in a]
-        piano_rolls = [aa[0] for aa in a]
-
-        if new_file_new_sequence:
-            raise ValueError("Unhandled case")
-        else:
-            data = np.concatenate(piano_rolls, axis=-1)
-
-        if new_file_new_sequence:
-            raise ValueError("Unhandled case")
-        else:
-            _len = data.shape[-1]
-        if stop_index >= 1:
-            self.stop_index = int(min(stop_index, _len))
-        elif stop_index > 0:
-            # percentage
-            self.stop_index = int(stop_index * _len)
-        elif stop_index < 0:
-            # negative index - must be int!
-            self.stop_index = _len + int(stop_index)
-
-        self._data = data
-        self.vocabulary_size = 128 + 1  # + 1 for silence
-        # set automatically
-        # self.simultaneous_notes = int(max(np.sum(self._data, axis=0)))
-        self.simultaneous_notes = 4
-
-        self.start_index = start_index
-        if start_index != 0:
-            raise ValueError("Currently unable to handle start point != 0")
-
-        """
-        if start_index < 0:
-            # negative indexing
-            self.start_index = _len + start_index
-        elif start_index < 1:
-            # float
-            self.start_index = int(start_index * _len)
-        else:
-            # regular
-            self.start_index = int(start_index)
-        """
-        if self.start_index >= self.stop_index:
-            ss = "Invalid indexes - stop "
-            ss += "%s <= start %s !" % (self.stop_index, self.start_index)
-            raise ValueError(ss)
-        self._current_index = self.start_index
-
-    def __iter__(self):
-        return self
-
-    def next(self):
-        return self.__next__()
-
-    def __next__(self):
-        s = self._current_index
-        if self.new_file_new_sequence:
-            raise ValueError("not handled")
-        else:
-            e = s + self.minibatch_size * self.sequence_length
-            if e > self.stop_index:
-                raise StopIteration("End of file iterator reached!")
-            data = self._data[:, s:e]
-            shp = data.shape
-            data = data.reshape((shp[0], self.minibatch_size, -1)).transpose(2, 1, 0)
-            li = list_iterator([data.transpose(1, 0, 2)], self.minibatch_size,
-                                axis=1, start_index=0,
-                                stop_index=len(data), make_mask=self.make_mask)
-            res = next(li)
-            # embedding elements directly?
-            # might make sense to embed based on relative context...
-            # get top self.simultaneous_notes items from piano roll
-            shp = res[0].shape
-            keys = np.zeros((shp[0], shp[1], self.simultaneous_notes),
-                             dtype="float32")
-            for i in range(shp[0]):
-                r = res[0][i]
-                elem, idx = np.where(r > 0)
-                for el in np.unique(elem):
-                    fi = np.where(elem == el)[0]
-                    k = idx[fi] + 1  # + 1 so silence is always 0
-                    # In case we decide to cut off some notes
-                    k = k[:self.simultaneous_notes]
-                    """
-                    # Now that we have some notes, do "interval encoding"
-                    # notewise, skipping sil
-                    mi = min(k[k > 0])
-                    k[k > mi] = k[k > mi] - mi
-                    # Make sure all the key values are > 0
-                    assert np.all(k >= 0)
-                    """
-                    keys[i, el, :len(k)] = k
-            self._current_index = e
-            return keys, res[1]
-
-    def reset(self):
-        self._current_index = self.start_index
-
-
 def duration_and_pitch_to_midi(filename, durations, pitches, prime_until=0):
     """
     durations and pitches should both be 2D
@@ -1025,14 +406,6 @@ class tfrecord_duration_and_pitch_iterator(object):
         if new_file_new_sequence:
             raise ValueError("Unhandled case")
         else:
-            """
-            self.time_classes = list(np.unique(np.concatenate(all_ds).ravel()))
-            ds0 = all_ds[0]
-            for n, i in enumerate(self.time_classes):
-                ds0[ds0 == i] = n
-            duration_and_pitch_to_midi("truf_b.mid", all_ds[0], all_ps[0])
-            """
-
             if not make_augmentations:
                 all_ds = np.concatenate(all_ds)
                 all_ps = np.concatenate(all_ps)
@@ -1064,14 +437,6 @@ class tfrecord_duration_and_pitch_iterator(object):
                 all_ds = np.concatenate(new_ds_list)
                 all_ps = np.concatenate(new_ps_list)
 
-            """
-            self.time_classes = list(np.unique(np.concatenate(all_ds).ravel()))
-            ds0 = all_ds[:400]
-            for n, i in enumerate(self.time_classes):
-                ds0[ds0 == i] = n
-
-            duration_and_pitch_to_midi("truf_nrs.mid", ds0, all_ps[:400])
-            """
             self._min_time_data = np.min(all_ds)
             self._max_time_data = np.max(all_ds)
             self.time_classes = list(np.unique(all_ds.ravel()))
@@ -1079,13 +444,6 @@ class tfrecord_duration_and_pitch_iterator(object):
             truncate = len(all_ds) - len(all_ds) % minibatch_size
             all_ds = all_ds[:truncate]
             all_ps = all_ps[:truncate]
-
-            """
-            all_ds = all_ds.reshape(len(all_ds) // minibatch_size,
-                                    minibatch_size, -1)
-            all_ps = all_ps.reshape(len(all_ps) // minibatch_size,
-                                    minibatch_size, -1)
-            """
 
             # transpose necessary to preserve data structure!
             all_ds = all_ds.transpose(1, 0)
@@ -1096,15 +454,6 @@ class tfrecord_duration_and_pitch_iterator(object):
             all_ps = all_ps.reshape(-1, minibatch_size,
                                     all_ps.shape[1] // minibatch_size)
             all_ps = all_ps.transpose(2, 1, 0)
-
-            """
-            self.time_classes = list(np.unique(np.concatenate(all_ds).ravel()))
-            ds0 = all_ds[:, 0]
-            for n, i in enumerate(self.time_classes):
-                ds0[ds0 == i] = n
-
-            duration_and_pitch_to_midi("truf_rs.mid", ds0, all_ps[:, 0])
-            """
 
             _len = len(all_ds)
             self._time_data = all_ds
@@ -1171,221 +520,11 @@ class tfrecord_duration_and_pitch_iterator(object):
                 res = (time_data, pitch_data)
             else:
                 raise ValueError("Unhandled mask making")
-                # super lazy way to make a mask
-                li = list_iterator([time_data.transpose(1, 0, 2),
-                                    pitch_data.transpose(1, 0, 2)], self.minibatch_size,
-                                    axis=1, start_index=0,
-                                    stop_index=len(time_data), make_mask=self.make_mask)
-                res = next(li)
-                # embedding elements directly?
-                # might make sense to embed based on relative context...
-                # get top self.simultaneous_notes items from piano roll
-                shp = res[0].shape
             self._current_index = e
             return res
 
     def reset(self):
         self._current_index = self.start_index
-
-
-def notesequence_to_piano_roll(notesequence, sample_rate=0.0625):
-    ns = notesequence
-    notes = ns.notes
-    st = np.array([n.start_time for n in notes]).astype("float32")
-    et = np.array([n.end_time for n in notes]).astype("float32")
-    dt = et - st
-    sample_steps = dt / sample_rate
-    # If this fails the sample_rate is not an integer divisor
-    assert np.all(np.abs(sample_steps - sample_steps.astype("int32")) < 1E-8)
-
-    sample_times = sorted(list(set(st)))
-    # TODO: generalize this
-    sn = 4
-
-    p = np.array([n.pitch for n in notes]).astype("float32")
-    pitch_slices = [p[st == sti][::-1][:sn] for sti in sample_times]
-    start_slices = [st[st == sti][::-1][:sn] for sti in sample_times]
-    end_slices = [et[st == sti][::-1][:sn] for sti in sample_times]
-    # If this fails something bad has happened in the ragged reshape
-    assert len(pitch_slices) == len(start_slices)
-    assert len(start_slices) == len(end_slices)
-    group = zip(pitch_slices, start_slices, end_slices)
-
-    # 88 + 1 for every note + each voice silence....
-    maxlen = int(max(et) / sample_rate) + 1
-    piano_roll = np.zeros((maxlen, 88 + 1)).astype("float32")
-
-    # This iteration is terrible but making it faster will be annoying
-    current_time = 0.
-    for ti in range(len(piano_roll)):
-        for ps, ss, es in group:
-            if np.all(es < current_time):
-                continue
-            smask = ss <= current_time
-            emask = es >= current_time
-            mask = smask * emask
-            idx = ps.astype("int32") * mask
-            piano_roll[ti, idx] = 1.
-            if np.all(es > current_time):
-                # no need to iterate all
-                break
-        current_time += sample_rate
-    # Cut off silence, handle turning to indices or padding in iterator!
-    piano_roll = piano_roll[:, 1:]
-    return piano_roll
-
-
-# TODO: Eliminate duplicate stuff...
-class tfrecord_roll_iterator(object):
-    def __init__(self, files_path, minibatch_size, start_index=0,
-                 stop_index=np.inf, make_mask=False,
-                 new_file_new_sequence=False,
-                 sequence_length=None,
-                 randomize=True, preprocess=None,
-                 preprocess_kwargs={}):
-        """
-        Supports regular int, negative indexing, or float for setting
-        stop_index
-        Two "modes":
-            new_line_new_sequence will do variable length minibatches based
-            on newlines in the file
-
-            without new_line_new_sequence the file is effectively one continuous
-            stream, and minibatches will be sequence_length, batch_size, 1
-        """
-        # TODO: FIX THIS HANDCRAFTED WEB OF LIES
-        # Need to figure out magenta path stuff later
-        # for now...
-        # PYTHONPATH=$PYTHONPATH:$HOME/src/magenta/
-        # bazel build //magenta:protobuf:music_py_pb2
-        # symlink bazel-out/local-opt/genfiles/magenta/protobuf/music_pb2.py
-        # into protobuf dir.
-        # Add __init__ files all over the place
-        # symlinked the BachChorale data in for now too...
-        from magenta.lib.note_sequence_io import note_sequence_record_iterator
-        reader = note_sequence_record_iterator(files_path)
-        self.note_classes = list(np.arange(88 + 1))  # + 1 for silence
-        # set automatically
-        # self.simultaneous_notes = int(max(np.sum(self._data, axis=0)))
-        self.simultaneous_notes = 4
-        #import multiprocessing as mp
-        #pool = mp.Pool()
-        #all_pr = pool.map(notesequence_to_piano_roll, reader)
-        #del pool
-        all_pr = map(notesequence_to_piano_roll, reader)
-
-        if new_file_new_sequence:
-            raise ValueError("Unhandled case")
-        else:
-            all_pr = np.concatenate(all_pr, axis=0)
-            truncate = len(all_pr) - len(all_pr) % minibatch_size
-            all_pr = all_pr[:truncate]
-            # transpose necessary to preserve data structure!
-            all_pr = all_pr.transpose(1, 0)
-            all_pr = all_pr.reshape(-1, minibatch_size,
-                                    all_pr.shape[1] // minibatch_size)
-            all_pr = all_pr.transpose(2, 1, 0)
-            _len = len(all_pr)
-            self._data = all_pr
-
-        self.minibatch_size = minibatch_size
-        self.new_file_new_sequence = new_file_new_sequence
-        self.sequence_length = sequence_length
-        if randomize:
-            self.random_state = np.random.RandomState(2177)
-        self.make_mask = make_mask
-        if new_file_new_sequence and sequence_length is None:
-            raise ValueError("sequence_length must be provided if",
-                             "new_line_new_sequence is False!")
-
-        if stop_index >= 1:
-            self.stop_index = int(min(stop_index, _len))
-        elif stop_index > 0:
-            # percentage
-            self.stop_index = int(stop_index * _len)
-        elif stop_index < 0:
-            # negative index - must be int!
-            self.stop_index = _len + int(stop_index)
-
-
-        self.start_index = start_index
-        if start_index < 0:
-            # negative indexing
-            self.start_index = _len + start_index
-        elif start_index < 1:
-            # float
-            self.start_index = int(start_index * _len)
-        else:
-            # regular
-            self.start_index = int(start_index)
-        if self.start_index >= self.stop_index:
-            ss = "Invalid indexes - stop "
-            ss += "%s <= start %s !" % (self.stop_index, self.start_index)
-            raise ValueError(ss)
-        self._current_index = self.start_index
-
-    def __iter__(self):
-        return self
-
-    def next(self):
-        return self.__next__()
-
-    def __next__(self):
-        s = self._current_index
-        if self.new_file_new_sequence:
-            raise ValueError("not handled")
-        else:
-            e = s + self.sequence_length
-            if e > self.stop_index:
-                raise StopIteration("End of file iterator reached!")
-
-            # Convert from raw piano roll to embedding elements
-            data = self._data[s:e]
-            dr = data.reshape(-1, data.shape[-1])
-            note_data = np.zeros_like(dr[:, :self.simultaneous_notes])
-            for i in range(len(dr)):
-                # Truncate to at most N voices
-                notes = dr[i].nonzero()[0][:self.simultaneous_notes]
-                note_data[i, :len(notes)] = notes
-            note_data = note_data.reshape((data.shape[0], data.shape[1], -1))
-            if self.make_mask is False:
-                res = note_data
-            else:
-                raise ValueError("Not handled")
-                # super lazy way to make a mask
-                li = list_iterator([note_data,],
-                                   self.minibatch_size,
-                                   axis=1, start_index=0,
-                                   stop_index=len(note_data),
-                                   make_mask=self.make_mask)
-                res = next(li)
-            self._current_index = e
-            return res
-
-    def reset(self):
-        self._current_index = self.start_index
-
-
-def numpy_one_hot(labels_dense, n_classes=10):
-    """Convert class labels from scalars to one-hot vectors."""
-    labels_shape = labels_dense.shape
-    labels_dtype = labels_dense.dtype
-    labels_dense = labels_dense.ravel().astype("int32")
-    n_labels = labels_dense.shape[0]
-    index_offset = np.arange(n_labels) * n_classes
-    labels_one_hot = np.zeros((n_labels, n_classes))
-    labels_one_hot[np.arange(n_labels).astype("int32"),
-                   labels_dense.ravel()] = 1
-    labels_one_hot = labels_one_hot.reshape(labels_shape+(n_classes,))
-    return labels_one_hot.astype(labels_dtype)
-
-
-def tokenize_ind(phrase, vocabulary):
-    vocabulary_size = len(vocabulary.keys())
-    phrase = [vocabulary[char_] for char_ in phrase]
-    phrase = np.array(phrase, dtype='int32').ravel()
-    phrase = numpy_one_hot(phrase, vocabulary_size)
-    return phrase
 """
 end datasets
 """
@@ -1393,8 +532,6 @@ end datasets
 """
 begin initializers and Theano functions
 """
-
-
 def np_zeros(shape):
     """
     Builds a numpy variable filled with zeros
@@ -1907,38 +1044,42 @@ def make_numpy_weights(in_dim, out_dims, random_state, init=None,
     return ws
 
 
-def LearnedInitHidden(list_of_inputs, list_of_shapes):
-    raise ValueError("Need rewriting to TF")
-    # Helper to allow switch for learned hidden inits
-    ret = []
-    assert len(list_of_inputs) == len(list_of_shapes)
-    for i, shp in enumerate(list_of_shapes):
-        name = None
-        s = param(name, make_numpy_biases([shp[1]])[0])
-        ss = s[None, :] * tensor.ones((shp[0], shp[1]))
-        init = theano.ifelse.ifelse(tensor.abs_(ss.sum()) < 1E-12,
-                                    ss, list_of_inputs[i])
-        ret.append(init)
-    return ret
+_lib_shared_params = OrderedDict()
 
 
-def OneHot(indices, n_symbols):
-    shp = shape(indices)
-    if shp[-1] == 1 and len(shp) == 3:
-        indices = indices[:, :, 0]
+def _get_name():
+    return str(uuid.uuid4())
+
+
+def _get_shared(name):
+    if name in _lib_shared_params.keys():
+        logger.info("Found name %s in shared parameters" % name)
+        return _lib_shared_params[name]
     else:
-        raise ValueError("Currently unnsuppported case in OneHot")
-    oh = tf.one_hot(tf.cast(indices, "int32"), n_symbols,
-                    dtype="float32", axis=-1)
-    return oh
+        raise NameError("Name not found in shared params!")
+
+
+def _set_shared(name, variable):
+    if name in _lib_shared_params.keys():
+        raise ValueError("Trying to set key %s which already exists!" % name)
+    _lib_shared_params[name] = variable
 
 
 def Embedding(indices, n_symbols, output_dim, random_state, name=None):
     """
     Last dimension of indices tensor must be 1!!!!
     """
-    vectors = tf.Variable(random_state.randn(n_symbols, output_dim).astype("float32"),
-                          trainable=True)
+    if name is None:
+        name = _get_name()
+
+    try:
+        vectors = _get_shared(name)
+    except NameError:
+        vectors = tf.Variable(
+            random_state.randn(n_symbols, output_dim).astype("float32"),
+                               trainable=True)
+        _set_shared(name, vectors)
+
     ii = tf.cast(indices, "int32")
     shp = shape(ii)
     nd = len(shp)
@@ -1955,7 +1096,7 @@ def Embedding(indices, n_symbols, output_dim, random_state, name=None):
 
 
 def Multiembedding(multi_indices, n_symbols, output_dim, random_state,
-                   name=None):
+                   name=None, share_all=False):
     """
     Helper to compute many embeddings and concatenate
 
@@ -1967,8 +1108,20 @@ def Multiembedding(multi_indices, n_symbols, output_dim, random_state,
     if len(shp) != 3:
         raise ValueError("Unhandled rank != 3 for input multi_indices")
     index_range = shp[-1]
+    if share_all:
+        if name is None:
+            n = _get_name()
+            names = [n] * index_range
+        else:
+            names = [name + "_0" for i in range(index_range)]
+    else:
+        if name is None:
+            names = [_get_name() for i in range(index_range)]
+        else:
+            names = [name + "_%i" % i for i in range(index_range)]
     for i in range(index_range):
-        e = Embedding(multi_indices[:, :, i], n_symbols, output_dim, random_state)
+        e = Embedding(multi_indices[:, :, i], n_symbols, output_dim, random_state,
+                      name=names[i])
         output_embeds.append(e)
     return tf.concat(2, output_embeds)
 
@@ -2003,7 +1156,7 @@ def Automask(input_tensor, n_masks, axis=-1, name=None):
     masks = [np.zeros(shp_tup).astype("float32") for i in range(n_masks)]
     if n_masks < 2:
         raise ValueError("unhandled small n_masks value")
-    output_tensors = [input_tensor]
+    output_tensors = [masks[0] * input_tensor]
     for i in range(1, n_masks):
         masks[i][..., :i * div] = 1.
         output_tensors.append(masks[i] * input_tensor)
@@ -2029,11 +1182,31 @@ def Linear(list_of_inputs, input_dims, output_dim, random_state, name=None,
                                             init=init, scale=scale)
     else:
         weight_values = init[0]
-    weight = tf.Variable(weight_values, trainable=True)
+
+    if name is None:
+        name = _get_name()
+    elif name[0] is None:
+        name = (_get_name(),) + name[1:]
+        name = "_".join(name)
+
+    name_w = name + "_linear_w"
+    name_b = name + "_linear_b"
+    name_wn = name + "_linear_wn"
+
+    try:
+        weight = _get_shared(name_w)
+    except NameError:
+        weight = tf.Variable(weight_values, trainable=True)
+        _set_shared(name_w, weight)
+
     # http://arxiv.org/abs/1602.07868
     if weight_norm:
         norm_values = np.linalg.norm(weight_values, axis=0)
-        norms = tf.Variable(norm_values, trainable=True)
+        try:
+            norms = _get_shared(name_wn)
+        except NameError:
+            norms = tf.Variable(norm_values, trainable=True)
+            _set_shared(name_wn, norms)
         norm = tf.sqrt(tf.reduce_sum(tf.abs(weight ** 2), reduction_indices=[0],
                                      keep_dims=True))
         normed_weight = weight * (norms / norm)
@@ -2046,72 +1219,14 @@ def Linear(list_of_inputs, input_dims, output_dim, random_state, name=None,
             b, = make_numpy_biases([output_dim])
         else:
             b = init[1]
-        biases = tf.Variable(b, trainable=True)
+        try:
+            biases = _get_shared(name_b)
+        except NameError:
+            biases = tf.Variable(b, trainable=True)
+            _set_shared(name_b, biases)
         terms.append(biases)
     out = reduce(lambda a, b: a + b, terms)
-    # Not adding default names/scoping for now
-    # out.name = get_generic_name() + ".output"
     return out
-
-
-def make_conv_weights(in_dim, out_dims, kernel_size, random_state):
-    raise ValueError("Need rewriting to TF")
-    """
-    Will return as many things as are in the list of out_dims
-    You *must* get a list back, even for 1 element returned!
-    blah, = make_conv_weights(...)
-    or
-    [blah] = make_conv_weights(...)
-    """
-    return apply_shared([np_tanh_fan_normal(
-        ((in_dim, kernel_size[0], kernel_size[1]),
-         (out_dim, kernel_size[0], kernel_size[1])), random_state)
-                         for out_dim in out_dims])
-
-
-def conv2d(input, filters, biases=None, border_mode=0, stride=(1, 1)):
-    raise ValueError("Need rewriting to TF")
-    """
-    Light wrapper around conv2d - optionally handle biases
-    """
-    r = nnet.conv2d(
-            input=input,
-            filters=filters,
-            border_mode=border_mode,
-            subsample=stride,
-            filter_flip=True)
-    if biases is None:
-        return r
-    else:
-        return r + biases.dimshuffle('x', 0, 'x', 'x')
-
-
-def unpool(input, pool_size=(1, 1)):
-    raise ValueError("Need rewriting to TF")
-    """
-    Repeat unpooling
-    """
-    return input.repeat(pool_size[0], axis=2).repeat(pool_size[1], axis=3)
-
-
-def conv2d_transpose(input, filters, biases=None, border_mode=0, stride=(1, 1)):
-    raise ValueError("Need rewriting to TF")
-    """
-    Light wrapper around conv2d_transpose
-    """
-    # swap to in dim out dim to make life easier
-    filters = filters.transpose(1, 0, 2, 3)
-    r = conv2d_grad_wrt_inputs(
-            output_grad=input,
-            filters=filters,
-            input_shape=(None, None, input.shape[2], input.shape[3]),
-            border_mode=border_mode,
-            subsample=stride,
-            filter_flip=True)
-    if biases is None:
-        return r
-    else:
-        return r + biases.dimshuffle('x', 0, 'x', 'x')
 
 
 def gru_weights(input_dim, hidden_dim, forward_init=None, hidden_init="normal",
@@ -2155,6 +1270,8 @@ def gru_weights(input_dim, hidden_dim, forward_init=None, hidden_init="normal",
 def GRU(inp, gate_inp, previous_state, input_dim, hidden_dim, random_state,
         mask=None, name=None, init=None, scale="default", weight_norm=None,
         biases=False):
+        if name is not None:
+            raise ValueError("Unhandled parameter sharing in GRU")
         if init is None:
             hidden_init = "ortho"
         elif init == "normal":
@@ -2179,13 +1296,14 @@ def GRU(inp, gate_inp, previous_state, input_dim, hidden_dim, random_state,
         dim = hidden_dim
         f1 = Linear([previous_state], [2 * hidden_dim], 2 * hidden_dim,
                     random_state, name=(name, "update/reset"), init=[Wur],
-                    biases=biases)
+                    biases=biases, weight_norm=weight_norm)
         gates = sigmoid(f1 + gate_inp)
         update = gates[:, :dim]
         reset = gates[:, dim:]
         state_reset = previous_state * reset
         f2 = Linear([state_reset], [hidden_dim], hidden_dim,
-                    random_state, name=(name, "state"), init=[U], biases=biases)
+                    random_state, name=(name, "state"), init=[U], biases=biases,
+                    weight_norm=weight_norm)
         next_state = tf.tanh(f2 + inp)
         next_state = next_state * update + previous_state * (1. - update)
         next_state = mask * next_state + (1. - mask) * previous_state
@@ -2194,11 +1312,12 @@ def GRU(inp, gate_inp, previous_state, input_dim, hidden_dim, random_state,
 
 def GRUFork(list_of_inputs, input_dims, output_dim, random_state, name=None,
             init=None, scale="default", weight_norm=None, biases=True):
+        if name is not None:
+            raise ValueError("Unhandled parameter sharing in GRUFork")
         gates = Linear(list_of_inputs, input_dims, 3 * output_dim,
                        random_state=random_state,
                        name=(name, "gates"), init=init, scale=scale,
-                       weight_norm=weight_norm,
-                       biases=biases)
+                       weight_norm=weight_norm, biases=biases)
         dim = output_dim
         nd = ndim(gates)
         if nd == 2:
@@ -2254,7 +1373,7 @@ def lstm_weights(input_dim, hidden_dim, forward_init=None, hidden_init="normal",
         U = np.hstack([np_ortho((shape[1], shape[1]), random_state),
                        np_ortho((shape[1], shape[1]), random_state),
                        np_ortho((shape[1], shape[1]), random_state),
-                       np_ortho((shape[1], shape[1]), random_state), ])
+                       np_ortho((shape[1], shape[1]), random_state),])
     return W, b, U
 
 
@@ -2267,6 +1386,8 @@ def LSTM(inp, gate_inp, previous_state, input_dim, hidden_dim, random_state,
         will need to slice yourself, or handle in some way
         This was done specifically to have the GRU, LSTM activations swappable
         """
+        if name is not None:
+            raise ValueError("Unhandled parameter sharing in LSTM")
         if gate_inp != "LSTMGates":
             raise ValueError("Use LSTMFork to setup this block")
         if init is None:
@@ -2299,10 +1420,10 @@ def LSTM(inp, gate_inp, previous_state, input_dim, hidden_dim, random_state,
         previous_st = _s(previous_state, 0)
 
         preactivation = Linear([previous_st], [4 * hidden_dim],
-                                4 * hidden_dim,
-                                random_state, name=(name, "preactivation"),
-                                init=[U],
-                                biases=False) + inp
+                               4 * hidden_dim,
+                               random_state, name=(name, "preactivation"),
+                               init=[U],
+                               biases=False) + inp
 
         ig = sigmoid(_s(preactivation, 0))
         fg = sigmoid(_s(preactivation, 1))
@@ -2325,6 +1446,8 @@ def LSTMFork(list_of_inputs, input_dims, output_dim, random_state, name=None,
         output dim should be the hidden size for each gate
         overall size will be 4x
         """
+        if name is not None:
+            raise ValueError("Unhandled parameter sharing in LSTMFork")
         inp_d = np.sum(input_dims)
         W, b, U = lstm_weights(inp_d, output_dim,
                                random_state=random_state)
@@ -2335,14 +1458,6 @@ def LSTMFork(list_of_inputs, input_dims, output_dim, random_state, name=None,
                         weight_norm=weight_norm,
                         biases=True)
         return inputs, "LSTMGates"
-
-
-def logsumexp(x, axis=None):
-    raise ValueError("Need rewriting to TF")
-    x_max = tensor.max(x, axis=axis, keepdims=True)
-    z = tensor.log(tensor.sum(tensor.exp(x - x_max),
-                              axis=axis, keepdims=True)) + x_max
-    return z.sum(axis=axis)
 
 
 def softmax(X):
@@ -2363,51 +1478,12 @@ def numpy_softmax(X, temperature=1.):
     return out
 
 
-def elu(x, alpha=1):
-    raise ValueError("Need rewriting to TF")
-    """
-    Compute the element-wise exponential linear activation function.
-    From theano 0.0.8 - here for backwards compat
-    """
-    return tensor.switch(x > 0, x, alpha * (tensor.exp(x) - 1))
-
-
-def relu(x):
-    raise ValueError("Need rewriting to TF")
-    return x * (x > 1e-6)
-
-
 def tanh(x):
     return tf.tanh(x)
 
 
 def sigmoid(x):
     return tf.sigmoid(x)
-
-
-def binary_crossentropy(predicted_values, true_values):
-    raise ValueError("Need rewriting to TF")
-    """
-    Bernoulli negative log likelihood of predicted compared to binary
-    true_values
-
-    Parameters
-    ----------
-    predicted_values : tensor, shape 2D or 3D
-        The predicted values out of some layer, normally a sigmoid_layer
-
-    true_values : tensor, shape 2D or 3D
-        The ground truth values. Mush have same shape as predicted_values
-
-    Returns
-    -------
-    binary_crossentropy : tensor, shape predicted_values.shape[1:]
-        The cost per sample, or per sample per step if 3D
-
-    """
-    raise ValueError("TFIFY")
-    return (-true_values * tensor.log(predicted_values) - (
-        1 - true_values) * tensor.log(1 - predicted_values)).sum(axis=-1)
 
 
 def categorical_crossentropy(predicted_values, true_values, class_weights=None,
@@ -2490,38 +1566,6 @@ def categorical_crossentropy(predicted_values, true_values, class_weights=None,
                               cw * true_values * tf.log(predicted_values))
     ce = -tf.reduce_sum(stable_result, reduction_indices=[nd - 1])
     return ce
-
-
-def sample_binomial(coeff, n_bins, theano_rng, debug=False):
-    raise ValueError("Need rewriting to TF")
-    # ? Normal approximation?
-    if coeff.ndim > 2:
-        raise ValueError("Unsupported dim")
-    if debug:
-        idx = coeff * n_bins
-    else:
-        shp = coeff.shape
-        inc = tensor.ones((shp[0], shp[1], n_bins))
-        expanded_coeff = coeff.dimshuffle(0, 1, 'x')
-        expanded_coeff = expanded_coeff * inc
-        # n > 1 not supported?
-        # idx = theano_rng.binomial(n=n_bins, p=coeff, dtype=coeff.dtype)
-        idx = theano_rng.binomial(n=1, p=expanded_coeff, dtype=coeff.dtype,
-                                  size=expanded_coeff.shape)
-        idx = idx.sum(axis=-1)
-    return tensor.cast(idx, "float32")
-
-
-def sample_softmax(coeff, theano_rng, epsilon=1E-5, debug=False):
-    raise ValueError("Need rewriting to TF")
-    if coeff.ndim > 2:
-        raise ValueError("Unsupported dim")
-    if debug:
-        idx = coeff.argmax(axis=1)
-    else:
-        idx = tensor.argmax(theano_rng.multinomial(pvals=coeff, dtype=coeff.dtype),
-                            axis=1)
-    return tensor.cast(idx, "float32")
 
 
 def numpy_sample_softmax(coeff, random_state, class_weights=None, debug=False):
@@ -2792,7 +1836,7 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
     """
     loop function must have the following api
     _loop(itr, sess, inits=None, do_updates=True)
-        return cost, init_1, init_2, ....
+          return cost, init_1, init_2, ....
     must pass back a list!!! For only output cost, do
         return [cost]
     do_updates will control what happens in a validation loop
@@ -2896,11 +1940,6 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
         train_saver = tf.train.Saver(av)
         valid_saver = tf.train.Saver(av)
         force_saver = tf.train.Saver(av)
-        """
-        Session restore?
-        if os.path.exists(checkpoint_path):
-            saver.restore(sess, checkpoint_path)
-        """
         try:
             for e in range(start_epoch, start_epoch + n_epochs):
                 joint_start = time.time()
@@ -3162,29 +2201,6 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
 
     if not skip_minimums:
         logger.info("Unhandled minimum saving... skipped!")
-        """
-        # Finalize saving best train and valid
-        ee = best_valid_checkpoint_epoch
-        best_valid_checkpoint_dict = pickle.loads(best_valid_checkpoint_pickle)
-        checkpoint_save_path = "%s_model_checkpoint_valid_%i.pkl" % (ident, ee)
-        weights_save_path = "%s_model_weights_valid_%i.npz" % (ident, ee)
-        tcw.send((checkpoint_save_path, best_valid_checkpoint_dict))
-        tww.send((weights_save_path, best_valid_checkpoint_dict))
-        best_valid_results_dict = {k: v for k, v in best_valid_checkpoint_dict.items()}
-        results_save_path = "%s_model_results_valid_%i.html" % (ident, ee)
-        thw.send((results_save_path, best_valid_results_dict))
-
-        best_train_checkpoint_dict = pickle.loads(best_train_checkpoint_pickle)
-        best_train_results_dict = {k: v for k, v in best_train_checkpoint_dict.items()
-                                   if k not in ignore_keys}
-        ee = best_train_checkpoint_epoch
-        checkpoint_save_path = "%s_model_checkpoint_train_%i.pkl" % (ident, ee)
-        weights_save_path = "%s_model_weights_train_%i.npz" % (ident, ee)
-        results_save_path = "%s_model_results_train_%i.html" % (ident, ee)
-        tcw.send((checkpoint_save_path, best_train_checkpoint_dict))
-        tww.send((weights_save_path, best_train_checkpoint_dict))
-        thw.send((results_save_path, best_train_results_dict))
-        """
     logger.info("Loop finished, closing write threads (this may take a while!)")
     thw.close()
 """

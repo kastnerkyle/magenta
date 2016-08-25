@@ -7,14 +7,13 @@ from tfkdllib import LSTM, LSTMFork
 from tfkdllib import softmax, categorical_crossentropy
 from tfkdllib import run_loop
 from tfkdllib import tfrecord_duration_and_pitch_iterator
-from tfkdllib import duration_and_pitch_to_midi
 
 
-num_epochs = 25
+num_epochs = 50
 batch_size = 32
-# sequence length of 5 is ~8 seconds
-sequence_length = 40
-reset_mb = 100
+# ~1 step per seconds
+# 30 steps ~= 30 seconds
+sequence_length = 30
 
 train_itr = tfrecord_duration_and_pitch_iterator("BachChorales.tfrecord",
                                                  batch_size,
@@ -24,28 +23,30 @@ train_itr = tfrecord_duration_and_pitch_iterator("BachChorales.tfrecord",
 duration_mb, note_mb = next(train_itr)
 train_itr.reset()
 
-# TODO: Add validation set...
 valid_itr = tfrecord_duration_and_pitch_iterator("BachChorales.tfrecord",
                                                  batch_size,
                                                  start_index=.9,
                                                  sequence_length=sequence_length)
-
-duration_mb, note_mb = next(train_itr)
-train_itr.reset()
 
 num_note_features = note_mb.shape[-1]
 num_duration_features = duration_mb.shape[-1]
 n_note_symbols = len(train_itr.note_classes)
 n_duration_symbols = len(train_itr.time_classes)
 n_notes = train_itr.simultaneous_notes
-note_embed_dim = 32
-duration_embed_dim = 10
-n_dim = 256
+note_embed_dim = 20
+duration_embed_dim = 4
+n_dim = 64
 h_dim = n_dim
 note_out_dims = n_notes * [n_note_symbols]
 duration_out_dims = n_notes * [n_duration_symbols]
 
 rnn_type = "lstm"
+weight_norm_middle = False
+weight_norm_outputs = False
+
+share_note_and_target_embeddings = True
+share_all_embeddings = False
+share_output_parameters = False
 
 if rnn_type == "lstm":
     RNNFork = LSTMFork
@@ -72,11 +73,21 @@ duration_target = tf.placeholder(tf.float32,
                                  [None, batch_size, num_duration_features])
 init_h1 = tf.placeholder(tf.float32, [batch_size, rnn_dim])
 
+if share_note_and_target_embeddings:
+    name_dur_emb = "dur"
+    name_note_emb = "note"
+else:
+    name_dur_emb = None
+    name_note_emb = None
 duration_embed = Multiembedding(duration_inpt, n_duration_symbols,
-                                duration_embed_dim, random_state)
+                                duration_embed_dim, random_state,
+                                name=name_dur_emb,
+                                share_all=share_all_embeddings)
 
 note_embed = Multiembedding(note_inpt, n_note_symbols,
-                            note_embed_dim, random_state)
+                            note_embed_dim, random_state,
+                            name=name_note_emb,
+                            share_all=share_all_embeddings)
 
 scan_inp = tf.concat(2, [duration_embed, note_embed])
 scan_inp_dim = n_notes * duration_embed_dim + n_notes * note_embed_dim
@@ -86,36 +97,46 @@ def step(inp_t, h1_tm1):
     h1_t_proj, h1gate_t_proj = RNNFork([inp_t],
                                        [scan_inp_dim],
                                        h_dim,
-                                       random_state)
+                                       random_state,
+                                       weight_norm=weight_norm_middle)
     h1_t = RNN(h1_t_proj, h1gate_t_proj,
                h1_tm1, h_dim, h_dim, random_state)
     return h1_t
 
 h1_f = scan(step, [scan_inp], [init_h1])
 h1 = h1_f
-# for now LSTM is busted
-# cut off cell...
 final_h1 = ni(h1, -1)
 
 target_note_embed = Multiembedding(note_target, n_note_symbols, note_embed_dim,
-                                   random_state)
+                                   random_state,
+                                   name=name_note_emb,
+                                   share_all=share_all_embeddings)
 target_note_masked = Automask(target_note_embed, n_notes)
 target_duration_embed = Multiembedding(duration_target, n_duration_symbols,
-                                       duration_embed_dim, random_state)
+                                       duration_embed_dim, random_state,
+                                       name=name_dur_emb,
+                                       share_all=share_all_embeddings)
 target_duration_masked = Automask(target_duration_embed, n_notes)
 
 costs = []
 note_preds = []
 duration_preds = []
+if share_output_parameters:
+    name_note = "note_pred"
+    name_dur = "dur_pred"
+else:
+    name_note = None
+    name_dur = None
 for i in range(n_notes):
-    final_wn = False
     note_pred = Linear([h1[:, :, :h_dim],
                         scan_inp,
                         target_note_masked[i], target_duration_masked[i]],
                        [h_dim,
                         scan_inp_dim,
                         n_notes * note_embed_dim, n_notes * duration_embed_dim],
-                       note_out_dims[i], random_state, weight_norm=final_wn)
+                       note_out_dims[i], random_state,
+                       weight_norm=weight_norm_outputs,
+                       name=name_note)
     duration_pred = Linear([h1[:, :, :h_dim],
                             scan_inp,
                             target_note_masked[i],
@@ -125,12 +146,14 @@ for i in range(n_notes):
                             n_notes * note_embed_dim,
                             n_notes * duration_embed_dim],
                            duration_out_dims[i],
-                           random_state, weight_norm=final_wn)
+                           random_state, weight_norm=weight_norm_outputs,
+                           name=name_dur)
     n = categorical_crossentropy(softmax(note_pred), note_target[:, :, i])
     d = categorical_crossentropy(softmax(duration_pred),
                                  duration_target[:, :, i])
     cost = n_duration_symbols * tf.reduce_mean(n) + n_note_symbols * tf.reduce_mean(d)
     cost /= (n_duration_symbols + n_note_symbols)
+    #cost = n_duration_symbols * tf.reduce_mean(n) + n_note_symbols * tf.reduce_mean(d)
     note_preds.append(note_pred)
     duration_preds.append(duration_pred)
     costs.append(cost)
@@ -138,38 +161,15 @@ for i in range(n_notes):
 # 4 notes pitch and 4 notes duration
 cost = sum(costs) / float(n_notes + n_notes)
 
-# cost in bits
-# cost = cost * 1.44269504089
 params = tf.trainable_variables()
 grads = tf.gradients(cost, params)
 grads = [tf.clip_by_value(grad, -grad_clip, grad_clip) for grad in grads]
 opt = tf.train.AdamOptimizer(learning_rate, use_locking=True)
 updates = opt.apply_gradients(zip(grads, params))
 
-# random resetting???
-# A series of filthy hacks so I can do resetting every so many minibatches
-# Start at 1 so it only gets reset @ 100
-i = 1
-def get_itr():
-    global i
-    i = i + 1
-    return i - 1
-
-def set_itr():
-    global i
-    i = 1
-
 
 def _loop(itr, sess, inits=None, do_updates=True):
-    if inits is None:
-        i_h1 = np.zeros((batch_size, rnn_dim)).astype("float32")
-    else:
-        global max_mb
-        if (get_itr() % reset_mb) == 0:
-            i_h1 = np.zeros((batch_size, rnn_dim)).astype("float32")
-            set_itr()
-        else:
-            i_h1 = inits[0]
+    i_h1 = np.zeros((batch_size, rnn_dim)).astype("float32")
     duration_mb, note_mb = next(itr)
     X_note_mb = note_mb[:-1]
     y_note_mb = note_mb[1:]
@@ -180,7 +180,7 @@ def _loop(itr, sess, inits=None, do_updates=True):
             duration_inpt: X_duration_mb,
             duration_target: y_duration_mb,
             init_h1: i_h1}
-    if True:
+    if do_updates:
         outs = [cost, final_h1, updates]
         train_loss, h1_l, _ = sess.run(outs, feed)
     else:

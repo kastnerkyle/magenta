@@ -1,7 +1,7 @@
 from __future__ import print_function
 import tensorflow as tf
 import os
-from tfkdllib import numpy_softmax, numpy_sample_softmax, piano_roll_to_midi
+from tfkdllib import numpy_softmax, numpy_sample_softmax
 from tfkdllib import duration_and_pitch_to_midi
 
 
