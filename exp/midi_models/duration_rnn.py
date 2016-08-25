@@ -153,7 +153,6 @@ for i in range(n_notes):
                                  duration_target[:, :, i])
     cost = n_duration_symbols * tf.reduce_mean(n) + n_note_symbols * tf.reduce_mean(d)
     cost /= (n_duration_symbols + n_note_symbols)
-    #cost = n_duration_symbols * tf.reduce_mean(n) + n_note_symbols * tf.reduce_mean(d)
     note_preds.append(note_pred)
     duration_preds.append(duration_pred)
     costs.append(cost)

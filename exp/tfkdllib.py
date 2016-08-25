@@ -1044,6 +1044,7 @@ def make_numpy_weights(in_dim, out_dims, random_state, init=None,
     return ws
 
 
+# Storage of internal shared
 _lib_shared_params = OrderedDict()
 
 
@@ -1199,6 +1200,7 @@ def Linear(list_of_inputs, input_dims, output_dim, random_state, name=None,
         weight = tf.Variable(weight_values, trainable=True)
         _set_shared(name_w, weight)
 
+    # Weight normalization... Kingma and Salimans
     # http://arxiv.org/abs/1602.07868
     if weight_norm:
         norm_values = np.linalg.norm(weight_values, axis=0)
@@ -1638,7 +1640,7 @@ def filled_js_template_from_results_dict(results_dict, default_show="all"):
     full_path = os.path.join(partial_path, "master.zip")
     url = "http://github.com/kastnerkyle/simple_template_plotter/archive/master.zip"
     if not os.path.exists(full_path):
-        # Do not download automagically...
+        # Do NOT download automagically...
         logger.info("Download plotter template code from %s" % url)
         logger.info("Place in %s" % full_path)
         logger.info("Currently unable to save HTML, JS template unavailable")
