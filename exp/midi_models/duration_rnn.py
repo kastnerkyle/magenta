@@ -9,7 +9,7 @@ from tfkdllib import run_loop
 from tfkdllib import tfrecord_duration_and_pitch_iterator
 
 
-num_epochs = 500
+num_epochs = 25
 batch_size = 32
 # ~1 step per seconds
 # 30 steps ~= 30 seconds

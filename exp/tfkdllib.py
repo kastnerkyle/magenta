@@ -7,32 +7,16 @@ from scipy import linalg
 import tensorflow as tf
 import shutil
 import socket
-import wave
 import os
-import glob
 import re
 import copy
 import time
 import sys
-import uuid
 try:
     from StringIO import StringIO
 except ImportError:
     from io import StringIO
 
-try:
-    import cPickle as pickle
-except ImportError:
-    import pickle
-try:
-    import Queue
-except ImportError:
-    import queue as Queue
-import threading
-try:
-    import urllib.request as urllib  # for backwards compatibility
-except ImportError:
-    import urllib2 as urllib
 import logging
 from collections import OrderedDict
 
@@ -53,21 +37,6 @@ ch.setFormatter(formatter)
 logger.addHandler(ch)
 """
 end logging
-"""
-
-"""
-begin decorators
-"""
-
-
-def coroutine(func):
-    def start(*args, **kwargs):
-        cr = func(*args, **kwargs)
-        cr.next()
-        return cr
-    return start
-"""
-end decorators
 """
 
 """
@@ -1633,128 +1602,20 @@ def save_checkpoint(checkpoint_save_path, saver, sess):
     logger.info("Model saved to %s" % checkpoint_save_path)
 
 
-def filled_js_template_from_results_dict(results_dict, default_show="all"):
-    # Uses arbiter strings in the template to split the template and stick
-    # values in
-    partial_path = get_resource_dir("js_plot_dependencies")
-    full_path = os.path.join(partial_path, "master.zip")
-    url = "http://github.com/kastnerkyle/simple_template_plotter/archive/master.zip"
-    if not os.path.exists(full_path):
-        # Do NOT download automagically...
-        logger.info("Download plotter template code from %s" % url)
-        logger.info("Place in %s" % full_path)
-        logger.info("Currently unable to save HTML, JS template unavailable")
-        raise ImportError("JS Template unavailable")
-
-    js_path = os.path.join(partial_path, "simple_template_plotter-master")
-    template_path = os.path.join(js_path, "template.html")
-    f = open(template_path, mode='r')
-    all_template_lines = f.readlines()
-    f.close()
-    imports_split_index = [n for n, l in enumerate(all_template_lines)
-                           if "IMPORTS_SPLIT" in l][0]
-    data_split_index = [n for n, l in enumerate(all_template_lines)
-                        if "DATA_SPLIT" in l][0]
-    log_split_index = [n for n, l in enumerate(all_template_lines)
-                       if "LOGGING_SPLIT" in l][0]
-    first_part = all_template_lines[:imports_split_index]
-    imports_part = []
-    js_files_path = os.path.join(js_path, "js")
-    js_file_names = ["jquery-1.9.1.js", "knockout-3.0.0.js",
-                     "highcharts.js", "exporting.js"]
-    js_files = [os.path.join(js_files_path, jsf) for jsf in js_file_names]
-    for js_file in js_files:
-        with open(js_file, "r") as f:
-            imports_part.extend(
-                ["<script>\n"] + f.readlines() + ["</script>\n"])
-    post_imports_part = all_template_lines[
-        imports_split_index + 1:data_split_index]
-    log_part = all_template_lines[data_split_index + 1:log_split_index]
-    last_part = all_template_lines[log_split_index + 1:]
-
-    def gen_js_field_for_key_value(key, values, show=True):
-        assert type(values) is list
-        if isinstance(values[0], (np.generic, np.ndarray)):
-            values = [float(v.ravel()) for v in values]
-        maxlen = 1500
-        if len(values) > maxlen:
-            values = list(np.interp(np.linspace(0, len(values), maxlen),
-                          np.arange(len(values)), values))
-        show_key = "true" if show else "false"
-        return "{\n    name: '%s',\n    data: %s,\n    visible: %s\n},\n" % (
-            str(key), str(values), show_key)
-    data_part = [gen_js_field_for_key_value(k, results_dict[k], True)
-                 if k in default_show or default_show == "all"
-                 else gen_js_field_for_key_value(k, results_dict[k], False)
-                 for k in sorted(results_dict.keys())]
-    all_filled_lines = first_part + imports_part + post_imports_part
-    all_filled_lines = all_filled_lines + data_part + log_part
-    # add logging output
+def save_results(save_path, results_dict, use_resource_dir=True,
+                         default_no_show="_auto"):
+    # Need to dump the log ...
     tmp = copy.copy(string_f)
     tmp.seek(0)
     log_output = tmp.readlines()
     del tmp
-    all_filled_lines = all_filled_lines + log_output + last_part
-    return all_filled_lines
-
-
-def save_results_as_html(save_path, results_dict, use_resource_dir=True,
-                         default_no_show="_auto"):
-    show_keys = [k for k in results_dict.keys()
-                 if default_no_show not in k]
-    try:
-        as_html = filled_js_template_from_results_dict(
-            results_dict, default_show=show_keys)
-        if use_resource_dir:
-            # Assume it ends with .py ...
-            script_name = get_script_name()[:-3]
-            save_path = os.path.join(get_resource_dir(script_name), save_path)
-        logger.info("Saving HTML results %s" % save_path)
-        with open(save_path, "w") as f:
-            f.writelines(as_html)
-        logger.info("Completed HTML results saving %s" % save_path)
-    except ImportError:
-        # The js template library wasn't found
-        # Need to dump the log ...
-        tmp = copy.copy(string_f)
-        tmp.seek(0)
-        log_output = tmp.readlines()
-        del tmp
-        ext = save_path.split(".")[-1]
-        if ext != ".log":
-            s = save_path.split(".")[:-1]
-            save_path = ".".join(s + ["log"])
-        with open(save_path, "w") as f:
-            f.writelines(log_output)
-        pass
-
-
-@coroutine
-def threaded_html_writer(maxsize=25):
-    """
-    Expects to be sent a tuple of (save_path, results_dict)
-
-    Kind of overkill for an HTML writer but useful for blocking writes
-    due to NFS
-    """
-    messages = Queue.PriorityQueue(maxsize=maxsize)
-    def run_thread():
-        while True:
-            p, item = messages.get()
-            if item is GeneratorExit:
-                return
-            else:
-                save_path, results_dict = item
-                save_results_as_html(save_path, results_dict)
-    threading.Thread(target=run_thread).start()
-    try:
-        n = 0
-        while True:
-            item = (yield)
-            messages.put((n, item))
-            n -= 1
-    except GeneratorExit:
-        messages.put((1, GeneratorExit))
+    ext = save_path.split(".")[-1]
+    if ext != ".log":
+        s = save_path.split(".")[:-1]
+        save_path = ".".join(s + ["log"])
+    with open(save_path, "w") as f:
+        f.writelines(log_output)
+    pass
 
 
 def implot(arr, title="", cmap="gray", save_name=None):
@@ -1795,8 +1656,10 @@ def get_script_name():
 def get_resource_dir(name, resource_dir=None, folder=None, create_dir=True):
     """ Get dataset directory path """
     if not resource_dir:
-        resource_dir = os.getenv("TFKDLLIB_DIR", os.path.join(
-            os.path.expanduser("~"), "tfkdllib_dir"))
+        script_path = os.path.abspath(sys.argv[0])
+        script_sep = script_path.split(os.sep)
+        script_path = str(os.sep).join(script_sep[:-1])
+        resource_dir = os.path.join(script_path, "training_output")
     if folder is None:
         resource_dir = os.path.join(resource_dir, name)
     else:
@@ -1843,8 +1706,6 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
         return [cost]
     do_updates will control what happens in a validation loop
     inits will pass init_1, init_2,  ... back into the loop
-    TODO: add upload fields to the template, to add data to an html
-    and save a copy
     loop function should return a list of [cost] + all_init_hiddens or other
     states
     """
@@ -1855,82 +1716,36 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
     monitor_prob = 1. / monitor_frequency
 
     checkpoint_dict = {}
-    if False:
-        raise ValueError("CONTINUE?")
-        overall_train_costs = checkpoint_dict["train_costs"]
-        overall_valid_costs = checkpoint_dict["valid_costs"]
-        # Auto tracking times
-        overall_epoch_deltas = checkpoint_dict["epoch_deltas_auto"]
-        overall_epoch_times = checkpoint_dict["epoch_times_auto"]
-        overall_train_deltas = checkpoint_dict["train_deltas_auto"]
-        overall_train_times = checkpoint_dict["train_times_auto"]
-        overall_valid_deltas = checkpoint_dict["valid_deltas_auto"]
-        overall_valid_times = checkpoint_dict["valid_times_auto"]
-        overall_checkpoint_deltas = checkpoint_dict["checkpoint_deltas_auto"]
-        overall_checkpoint_times = checkpoint_dict["checkpoint_times_auto"]
-        overall_joint_deltas = checkpoint_dict["joint_deltas_auto"]
-        overall_joint_times = checkpoint_dict["joint_times_auto"]
-        overall_train_checkpoint = checkpoint_dict["train_checkpoint_auto"]
-        overall_valid_checkpoint = checkpoint_dict["valid_checkpoint_auto"]
-        keys_checked = ["train_costs",
-                        "valid_costs",
-                        "epoch_deltas_auto",
-                        "epoch_times_auto",
-                        "train_deltas_auto",
-                        "train_times_auto",
-                        "valid_deltas_auto",
-                        "valid_times_auto",
-                        "checkpoint_deltas_auto",
-                        "checkpoint_times_auto",
-                        "joint_deltas_auto",
-                        "joint_times_auto",
-                        "train_checkpoint_auto",
-                        "valid_checkpoint_auto"]
+    overall_train_costs = []
+    overall_valid_costs = []
+    overall_train_checkpoint = []
+    overall_valid_checkpoint = []
 
-        epoch_time_total = overall_epoch_times[-1]
-        train_time_total = overall_train_times[-1]
-        valid_time_total = overall_valid_times[-1]
-        checkpoint_time_total = overall_checkpoint_times[-1]
-        joint_time_total = overall_joint_times[-1]
+    epoch_time_total = 0
+    train_time_total = 0
+    valid_time_total = 0
+    checkpoint_time_total = 0
+    joint_time_total = 0
+    overall_epoch_times = []
+    overall_epoch_deltas = []
+    overall_train_times = []
+    overall_train_deltas = []
+    overall_valid_times = []
+    overall_valid_deltas = []
+    # Add zeros to avoid errors
+    overall_checkpoint_times = [0]
+    overall_checkpoint_deltas = [0]
+    overall_joint_times = [0]
+    overall_joint_deltas = [0]
 
-        start_epoch = len(overall_train_costs)
-    else:
-        overall_train_costs = []
-        overall_valid_costs = []
-        overall_train_checkpoint = []
-        overall_valid_checkpoint = []
+    start_epoch = 0
 
-        epoch_time_total = 0
-        train_time_total = 0
-        valid_time_total = 0
-        checkpoint_time_total = 0
-        joint_time_total = 0
-        overall_epoch_times = []
-        overall_epoch_deltas = []
-        overall_train_times = []
-        overall_train_deltas = []
-        overall_valid_times = []
-        overall_valid_deltas = []
-        # Add zeros to avoid errors
-        overall_checkpoint_times = [0]
-        overall_checkpoint_deltas = [0]
-        overall_joint_times = [0]
-        overall_joint_deltas = [0]
-
-        start_epoch = 0
-
-    # save current state of kdllib and calling script
+    # save current state of this lib and calling script
     _archive(ident)
 
-    thw = threaded_html_writer()
-
-    best_train_checkpoint_pickle = None
-    best_train_checkpoint_epoch = 0
-    best_valid_checkpoint_pickle = None
-    best_train_checkpoint_epoch = 0
     # If there are more than 1M minibatches per epoch this will break!
     # Not reallocating buffer greatly helps fast training models though
-    # Also we have bigger problems if there are 1M minibatches per epoch...
+    # We have bigger problems if there are 1M minibatches per epoch...
     # This will get sliced down to the correct number of minibatches
     # During calculations down below
     train_costs = [0.] * 1000000
@@ -1968,13 +1783,13 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
                         if len(r) > 1:
                             inits = r[1:]
                         else:
+                            # Special case of 1 output [cost]
                             pass
                         train_costs[train_mb_count] = np.mean(partial_train_costs)
                         tc = train_costs[train_mb_count]
                         train_mb_count += 1
                         if np.isnan(tc):
                             logger.info("NaN detected in train cost, update %i" % train_mb_count)
-                            thw.close()
                             raise ValueError("NaN detected in train")
 
                         if (train_mb_count % checkpoint_every_n_updates) == 0:
@@ -1992,8 +1807,7 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
                             # needs to be a list
                             running_train_mean = list(running_train_mean)
                             this_results_dict["this_epoch_train_mean_auto"] = running_train_mean
-                            results_save_path = "%s_model_update_results_%i.html" % (ident, train_mb_count)
-                            thw.send((results_save_path, this_results_dict))
+                            results_save_path = "%s_model_update_results_%i.log" % (ident, train_mb_count)
                         elif (time.time() - last_time_checkpoint) >= checkpoint_every_n_seconds:
                             time_diff = time.time() - train_start
                             last_time_checkpoint = time.time()
@@ -2012,17 +1826,15 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
                             # needs to be a list
                             running_train_mean = list(running_train_mean)
                             this_results_dict["this_epoch_train_mean_auto"] = running_train_mean
-                            results_save_path = "%s_model_time_results_%i.html" % (ident, int(time_diff))
-                            thw.send((results_save_path, this_results_dict))
+                            results_save_path = "%s_model_time_results_%i.log" % (ident, int(time_diff))
                         draw = random_state.rand()
                         if draw < monitor_prob and not skip_intermediates:
                             logger.info(" ")
                             logger.info("Starting train mb %i" % train_mb_count)
                             logger.info("Current mean cost %f" % np.mean(partial_train_costs))
                             logger.info(" ")
-                            results_save_path = "%s_intermediate_results.html" % ident
+                            results_save_path = "%s_intermediate_results.log" % ident
                             this_results_dict["this_epoch_train_auto"] = train_costs[:train_mb_count]
-                            thw.send((results_save_path, this_results_dict))
                 except StopIteration:
                     # Slice so that only valid data is in the minibatch
                     # this also assumes there is not a variable number
@@ -2050,7 +1862,6 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
                             valid_mb_count += 1
                             if np.isnan(vc):
                                 logger.info("NaN detected in valid cost, minibatch %i" % valid_mb_count)
-                                thw.close()
                                 raise ValueError("NaN detected in valid")
                             draw = random_state.rand()
                             if draw < monitor_prob and not skip_intermediates:
@@ -2059,10 +1870,9 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
                                 logger.info("Current validation mean cost %f" % np.mean(
                                     valid_costs))
                                 logger.info(" ")
-                                results_save_path = "%s_intermediate_results.html" % ident
                                 this_results_dict["this_epoch_valid_auto"] = valid_costs[:valid_mb_count]
-                                thw.send((results_save_path, this_results_dict))
                     except StopIteration:
+                        # Hit end of iterator
                         pass
                     logger.info(" ")
                     valid_stop = time.time()
@@ -2093,7 +1903,6 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
                     if np.isnan(mean_epoch_train_cost):
                         logger.info("Previous train costs %s" % overall_train_costs[-5:])
                         logger.info("NaN detected in train cost, epoch %i" % e)
-                        thw.close()
                         raise ValueError("NaN detected in train")
                     overall_train_costs.append(mean_epoch_train_cost)
 
@@ -2102,7 +1911,6 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
                     if np.isnan(mean_epoch_valid_cost):
                         logger.info("Previous valid costs %s" % overall_valid_costs[-5:])
                         logger.info("NaN detected in valid cost, epoch %i" % e)
-                        thw.close()
                         raise ValueError("NaN detected in valid")
                     overall_valid_costs.append(mean_epoch_valid_cost)
 
@@ -2152,17 +1960,11 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
                         logger.info("Checkpointing valid...")
                         checkpoint_save_path = "%s_model_checkpoint_valid_%i.ckpt" % (ident, e)
                         save_checkpoint(checkpoint_save_path, valid_saver, sess)
-                        # tcw.send((checkpoint_save_path, saver, sess))
-                        results_save_path = "%s_model_results_valid_%i.html" % (ident, e)
-                        thw.send((results_save_path, results_dict))
                         logger.info("Valid checkpointing complete.")
                     elif mean_epoch_train_cost < old_min_train_cost:
                         logger.info("Checkpointing train...")
                         checkpoint_save_path = "%s_model_checkpoint_train_%i.ckpt" % (ident, e)
                         save_checkpoint(checkpoint_save_path, train_saver, sess)
-                        # tcw.send((checkpoint_save_path, saver, sess))
-                        results_save_path = "%s_model_results_train_%i.html" % (ident, e)
-                        thw.send((results_save_path, results_dict))
                         logger.info("Train checkpointing complete.")
 
                     if e < checkpoint_delay:
@@ -2173,20 +1975,10 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
                         logger.info("Checkpointing force...")
                         checkpoint_save_path = "%s_model_checkpoint_%i.ckpt" % (ident, e)
                         save_checkpoint(checkpoint_save_path, force_saver, sess)
-                        # tcw.send((checkpoint_save_path, saver, sess))
-                        results_save_path = "%s_model_results_%i.html" % (ident, e)
-                        thw.send((results_save_path, results_dict))
                         logger.info("Force checkpointing complete.")
 
                     checkpoint_stop = time.time()
                     joint_stop = time.time()
-
-                    if skip_most_recents:
-                        pass
-                    else:
-                        # Save latest
-                        results_save_path = "%s_most_recent_results.html" % ident
-                        thw.send((results_save_path, results_dict))
 
                     # Will show up next go around
                     checkpoint_time_delta = checkpoint_stop - checkpoint_start
@@ -2199,12 +1991,8 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
                     overall_joint_deltas.append(joint_time_delta)
                     overall_joint_times.append(joint_time_total)
         except KeyboardInterrupt:
-            logger.info("Training loop interrupted by user! Saving current best results.")
-
-    if not skip_minimums:
-        logger.info("Unhandled minimum saving... skipped!")
+            logger.info("Training loop interrupted by user!")
     logger.info("Loop finished, closing write threads (this may take a while!)")
-    thw.close()
 """
 end training utilities
 """
