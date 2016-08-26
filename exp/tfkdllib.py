@@ -10,7 +10,6 @@ import socket
 import os
 import re
 import copy
-import time
 import sys
 try:
     from StringIO import StringIO
@@ -211,6 +210,8 @@ end metautils
 """
 begin datasets
 """
+
+
 def duration_and_pitch_to_midi(filename, durations, pitches, prime_until=0):
     """
     durations and pitches should both be 2D
@@ -219,14 +220,6 @@ def duration_and_pitch_to_midi(filename, durations, pitches, prime_until=0):
 
     from magenta.protobuf import music_pb2
     sequence = music_pb2.NoteSequence()
-
-    """
-    from magenta.lib.note_sequence_io import note_sequence_record_iterator
-    reader = note_sequence_record_iterator('BachChorales.tfrecord')
-    ns = reader.next()
-    ti = tfrecord_iterator("BachChorales.tfrecord", 50, make_mask=True,
-                           sequence_length=50)
-    """
 
     # Hardcode for now, eventually randomize?
     # or predict...
@@ -316,8 +309,7 @@ class tfrecord_duration_and_pitch_iterator(object):
             without new_line_new_sequence the file is effectively one continuous
             stream, and minibatches will be sequence_length, batch_size, 1
         """
-        filename_queue = tf.train.string_input_producer([files_path])
-        # TODO: FIX THIS HANDCRAFTED WEB OF LIES
+        # TODO: FIX THIS
         # Need to figure out magenta path stuff later
         # for now...
         # PYTHONPATH=$PYTHONPATH:$HOME/src/magenta/
@@ -339,12 +331,12 @@ class tfrecord_duration_and_pitch_iterator(object):
             st = np.array([n.start_time for n in notes]).astype("float32")
             et = np.array([n.end_time for n in notes]).astype("float32")
             dt = et - st
-            p = np.array([n.pitch for n in notes]).astype("float32")
+            pi = np.array([n.pitch for n in notes]).astype("float32")
 
             sample_times = sorted(list(set(st)))
             # go straight for pitch and delta time encoding
             sn = self.simultaneous_notes
-            pitch_slices = [p[st == sti][::-1] for sti in sample_times]
+            pitch_slices = [pi[st == sti][::-1] for sti in sample_times]
             # This monster fills in 0s so that array size is consistent
             pitch_slices = [p[:sn] if len(p) >= sn
                             else
@@ -447,7 +439,6 @@ class tfrecord_duration_and_pitch_iterator(object):
             # negative index - must be int!
             self.stop_index = _len + int(stop_index)
 
-
         self.start_index = start_index
         if start_index < 0:
             # negative indexing
@@ -501,6 +492,8 @@ end datasets
 """
 begin initializers and Theano functions
 """
+
+
 def np_zeros(shape):
     """
     Builds a numpy variable filled with zeros
@@ -1028,12 +1021,12 @@ def lstm_weights(input_dim, hidden_dim, forward_init=None, hidden_init="normal",
         U = np.hstack([np_normal((shape[1], shape[1]), random_state),
                        np_normal((shape[1], shape[1]), random_state),
                        np_normal((shape[1], shape[1]), random_state),
-                       np_normal((shape[1], shape[1]), random_state),])
+                       np_normal((shape[1], shape[1]), random_state), ])
     elif hidden_init == "ortho":
         U = np.hstack([np_ortho((shape[1], shape[1]), random_state),
                        np_ortho((shape[1], shape[1]), random_state),
                        np_ortho((shape[1], shape[1]), random_state),
-                       np_ortho((shape[1], shape[1]), random_state),])
+                       np_ortho((shape[1], shape[1]), random_state), ])
     return W, b, U
 
 
@@ -1074,7 +1067,7 @@ def LSTM(inp, gate_inp, previous_state, input_dim, hidden_dim, random_state,
         dim = hidden_dim
 
         def _s(p, d):
-           return p[:, d * dim:(d+1) * dim]
+            return p[:, d * dim:(d+1) * dim]
 
         previous_cell = _s(previous_state, 1)
         previous_st = _s(previous_state, 0)
@@ -1175,7 +1168,7 @@ def categorical_crossentropy(predicted_values, true_values, class_weights=None,
         The cost per sample, or per sample per step if 3D
 
     """
-    if eps != None:
+    if eps is not None:
         raise ValueError("Not yet implemented")
     else:
         predicted_values = tf.to_float(predicted_values)
@@ -1291,8 +1284,7 @@ def save_checkpoint(checkpoint_save_path, saver, sess):
     logger.info("Model saved to %s" % checkpoint_save_path)
 
 
-def save_results(save_path, results_dict, use_resource_dir=True,
-                         default_no_show="_auto"):
+def save_results(save_path, results_dict, use_resource_dir=True):
     # Need to dump the log ...
     tmp = copy.copy(string_f)
     tmp.seek(0)
@@ -1304,35 +1296,6 @@ def save_results(save_path, results_dict, use_resource_dir=True,
         save_path = ".".join(s + ["log"])
     with open(save_path, "w") as f:
         f.writelines(log_output)
-    pass
-
-
-def implot(arr, title="", cmap="gray", save_name=None):
-    import matplotlib.pyplot as plt
-    f, ax = plt.subplots()
-    ax.matshow(arr, cmap=cmap)
-    plt.axis("off")
-
-    def autoaspect(x_range, y_range):
-        """
-        The aspect to make a plot square with ax.set_aspect in Matplotlib
-        """
-        mx = max(x_range, y_range)
-        mn = min(x_range, y_range)
-        if x_range <= y_range:
-            return mx / float(mn)
-        else:
-            return mn / float(mx)
-
-    x1 = arr.shape[0]
-    y1 = arr.shape[1]
-    asp = autoaspect(x1, y1)
-    ax.set_aspect(asp)
-    plt.title(title)
-    if save_name is None:
-        plt.show()
-    else:
-        plt.savefig(save_name)
 
 
 def get_script_name():
@@ -1385,7 +1348,7 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
              checkpoint_every_n_updates=np.inf,
              checkpoint_every_n_seconds=1800,
              monitor_frequency=1000, skip_minimums=False,
-             skip_intermediates=True, skip_most_recents=False,
+             skip_most_recents=False,
              skip_n_train_minibatches=-1):
     """
     loop function must have the following api
@@ -1401,32 +1364,12 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
     logger.info("Running loops...")
     _loop = loop_function
     ident = str(uuid.uuid4())[:8]
-    random_state = np.random.RandomState(2177)
-    monitor_prob = 1. / monitor_frequency
 
     checkpoint_dict = {}
     overall_train_costs = []
     overall_valid_costs = []
     overall_train_checkpoint = []
     overall_valid_checkpoint = []
-
-    epoch_time_total = 0
-    train_time_total = 0
-    valid_time_total = 0
-    checkpoint_time_total = 0
-    joint_time_total = 0
-    overall_epoch_times = []
-    overall_epoch_deltas = []
-    overall_train_times = []
-    overall_train_deltas = []
-    overall_valid_times = []
-    overall_valid_deltas = []
-    # Add zeros to avoid errors
-    overall_checkpoint_times = [0]
-    overall_checkpoint_deltas = [0]
-    overall_joint_times = [0]
-    overall_joint_deltas = [0]
-
     start_epoch = 0
 
     # save current state of this lib and calling script
@@ -1448,8 +1391,6 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
         force_saver = tf.train.Saver(av)
         try:
             for e in range(start_epoch, start_epoch + n_epochs):
-                joint_start = time.time()
-                epoch_start = time.time()
                 logger.info(" ")
                 logger.info("Starting training, epoch %i" % e)
                 logger.info(" ")
@@ -1458,8 +1399,7 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
                 results_dict = {k: v for k, v in checkpoint_dict.items()}
                 this_results_dict = results_dict
                 try:
-                    train_start = time.time()
-                    last_time_checkpoint = train_start
+                    # Start training
                     inits = None
                     train_itr.reset()
                     while True:
@@ -1496,46 +1436,18 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
                             # needs to be a list
                             running_train_mean = list(running_train_mean)
                             this_results_dict["this_epoch_train_mean_auto"] = running_train_mean
-                            results_save_path = "%s_model_update_results_%i.log" % (ident, train_mb_count)
-                        elif (time.time() - last_time_checkpoint) >= checkpoint_every_n_seconds:
-                            time_diff = time.time() - train_start
-                            last_time_checkpoint = time.time()
-                            checkpoint_save_path = "%s_model_time_checkpoint_%i.ckpt" % (ident, int(time_diff))
-                            #tcw.send((checkpoint_save_path, saver, sess))
-                            save_checkpoint(checkpoint_save_path, train_saver, sess)
-
-                            logger.info(" ")
-                            logger.info("Time checkpoint after train mb %i" % train_mb_count)
-                            logger.info("Current mean cost %f" % np.mean(partial_train_costs))
-                            logger.info(" ")
-
-                            this_results_dict["this_epoch_train_auto"] = train_costs[:train_mb_count]
-                            tmb = train_costs[:train_mb_count]
-                            running_train_mean = np.cumsum(tmb) / (np.arange(train_mb_count) + 1)
-                            # needs to be a list
-                            running_train_mean = list(running_train_mean)
-                            this_results_dict["this_epoch_train_mean_auto"] = running_train_mean
-                            results_save_path = "%s_model_time_results_%i.log" % (ident, int(time_diff))
-                        draw = random_state.rand()
-                        if draw < monitor_prob and not skip_intermediates:
-                            logger.info(" ")
-                            logger.info("Starting train mb %i" % train_mb_count)
-                            logger.info("Current mean cost %f" % np.mean(partial_train_costs))
-                            logger.info(" ")
-                            results_save_path = "%s_intermediate_results.log" % ident
-                            this_results_dict["this_epoch_train_auto"] = train_costs[:train_mb_count]
                 except StopIteration:
                     # Slice so that only valid data is in the minibatch
                     # this also assumes there is not a variable number
                     # of minibatches in an epoch!
-                    train_stop = time.time()
                     # edge case - add one since stop iteration was raised
                     # before increment
                     train_costs_slice = train_costs[:train_mb_count + 1]
+
+                    # Start validation
                     logger.info(" ")
                     logger.info("Starting validation, epoch %i" % e)
                     logger.info(" ")
-                    valid_start = time.time()
                     inits = None
                     valid_itr.reset()
                     try:
@@ -1552,39 +1464,13 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
                             if np.isnan(vc):
                                 logger.info("NaN detected in valid cost, minibatch %i" % valid_mb_count)
                                 raise ValueError("NaN detected in valid")
-                            draw = random_state.rand()
-                            if draw < monitor_prob and not skip_intermediates:
-                                logger.info(" ")
-                                logger.info("Valid mb %i" % valid_mb_count)
-                                logger.info("Current validation mean cost %f" % np.mean(
-                                    valid_costs))
-                                logger.info(" ")
-                                this_results_dict["this_epoch_valid_auto"] = valid_costs[:valid_mb_count]
                     except StopIteration:
                         # Hit end of iterator
                         pass
                     logger.info(" ")
-                    valid_stop = time.time()
-                    epoch_stop = time.time()
                     # edge case - add one since stop iteration was raised
                     # before increment
                     valid_costs_slice = valid_costs[:valid_mb_count + 1]
-
-                    # Logging and tracking training statistics
-                    epoch_time_delta = epoch_stop - epoch_start
-                    epoch_time_total += epoch_time_delta
-                    overall_epoch_deltas.append(epoch_time_delta)
-                    overall_epoch_times.append(epoch_time_total)
-
-                    train_time_delta = train_stop - train_start
-                    train_time_total += train_time_delta
-                    overall_train_deltas.append(train_time_delta)
-                    overall_train_times.append(train_time_total)
-
-                    valid_time_delta = valid_stop - valid_start
-                    valid_time_total += valid_time_delta
-                    overall_valid_deltas.append(valid_time_delta)
-                    overall_valid_times.append(valid_time_total)
 
                     mean_epoch_train_cost = np.mean(train_costs_slice)
                     # np.inf trick to avoid taking the min of length 0 list
@@ -1615,17 +1501,6 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
 
                     checkpoint_dict["train_costs"] = overall_train_costs
                     checkpoint_dict["valid_costs"] = overall_valid_costs
-                    # Auto tracking times
-                    checkpoint_dict["epoch_deltas_auto"] = overall_epoch_deltas
-                    checkpoint_dict["epoch_times_auto"] = overall_epoch_times
-                    checkpoint_dict["train_deltas_auto"] = overall_train_deltas
-                    checkpoint_dict["train_times_auto"] = overall_train_times
-                    checkpoint_dict["valid_deltas_auto"] = overall_valid_deltas
-                    checkpoint_dict["valid_times_auto"] = overall_valid_times
-                    checkpoint_dict["checkpoint_deltas_auto"] = overall_checkpoint_deltas
-                    checkpoint_dict["checkpoint_times_auto"] = overall_checkpoint_times
-                    checkpoint_dict["joint_deltas_auto"] = overall_joint_deltas
-                    checkpoint_dict["joint_times_auto"] = overall_joint_times
                     # Tracking if checkpoints are made
                     checkpoint_dict["train_checkpoint_auto"] = overall_train_checkpoint
                     checkpoint_dict["valid_checkpoint_auto"] = overall_valid_checkpoint
@@ -1641,8 +1516,6 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
 
                     results_dict = {k: v for k, v in checkpoint_dict.items()}
 
-                    # Checkpointing part
-                    checkpoint_start = time.time()
                     if e < checkpoint_delay or skip_minimums:
                         pass
                     elif mean_epoch_valid_cost < old_min_valid_cost:
@@ -1665,20 +1538,6 @@ def run_loop(loop_function, train_itr, valid_itr, n_epochs,
                         checkpoint_save_path = "%s_model_checkpoint_%i.ckpt" % (ident, e)
                         save_checkpoint(checkpoint_save_path, force_saver, sess)
                         logger.info("Force checkpointing complete.")
-
-                    checkpoint_stop = time.time()
-                    joint_stop = time.time()
-
-                    # Will show up next go around
-                    checkpoint_time_delta = checkpoint_stop - checkpoint_start
-                    checkpoint_time_total += checkpoint_time_delta
-                    overall_checkpoint_deltas.append(checkpoint_time_delta)
-                    overall_checkpoint_times.append(checkpoint_time_total)
-
-                    joint_time_delta = joint_stop - joint_start
-                    joint_time_total += joint_time_delta
-                    overall_joint_deltas.append(joint_time_delta)
-                    overall_joint_times.append(joint_time_total)
         except KeyboardInterrupt:
             logger.info("Training loop interrupted by user!")
     logger.info("Loop finished, closing write threads (this may take a while!)")
