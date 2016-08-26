@@ -126,7 +126,7 @@ pillow                    3.1.1                    py27_0
 pip                       8.1.1                    py27_1  
 pixman                    0.32.6                        0  
 ply                       3.8                      py27_0  
-pretty-midi (/usr/local/google/home/kkastner/src/pretty-midi) 0.2rc0                    <pip>
+pretty-midi (/home/kkastner/src/pretty-midi) 0.2rc0                    <pip>
 protobuf                  3.0.0b2                   <pip>
 psutil                    4.1.0                    py27_0  
 ptyprocess                0.5                      py27_0  
@@ -160,7 +160,7 @@ redis-py                  2.10.3                   py27_0
 requests                  2.9.1                    py27_0  
 rope                      0.9.4                    py27_1  
 scikit-image              0.12.3              np110py27_0  
-scikit-learn (/usr/local/google/home/kkastner/src/scikit-learn) 0.18.dev0                 <pip>
+scikit-learn (home/kkastner/src/scikit-learn) 0.18.dev0                 <pip>
 scikit-learn              0.17.1              np110py27_0  
 scipy                     0.17.0              np110py27_2  
 setuptools                20.3                     py27_0  

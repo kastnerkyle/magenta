@@ -23,7 +23,7 @@ Be sure to build the magenta protobuf with
 bazel build //magenta:protobuf:music_py_pb2
 
 Now symlink the music_pb2.py file like so
-ln -s magenta/bazel-out/local-opt/genfiles/magenta/protobuf/music_pb2.py
+ln -s magenta/bazel-out/local-opt/genfiles/magenta/protobuf/music_pb2.py magenta/magenta/protobuf/music_pb2.py
 
 Add magenta to your PYTHONPATH, by adding the following to eg ~/.bashrc
 
