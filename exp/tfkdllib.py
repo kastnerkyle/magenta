@@ -518,56 +518,6 @@ def np_zeros(shape):
     return np.zeros(shape).astype("float32")
 
 
-def np_ones(shape):
-    """
-    Builds a numpy variable filled with ones
-
-    Parameters
-    ----------
-    shape, tuple of ints
-        shape of ones to initialize
-
-    Returns
-    -------
-    initialized_ones, array-like
-        Array-like of ones the same size as shape parameter
-    """
-    return np.ones(shape).astype("float32")
-
-
-def np_uniform(shape, random_state, scale=0.08):
-    """
-    Builds a numpy variable filled with uniform random values
-
-    Parameters
-    ----------
-    shape, tuple of ints or tuple of tuples
-        shape of values to initialize
-        tuple of ints should be single shape
-        tuple of tuples is primarily for convnets and should be of form
-        ((n_in_kernels, kernel_width, kernel_height),
-         (n_out_kernels, kernel_width, kernel_height))
-
-    random_state, numpy.random.RandomState() object
-
-    scale, float (default 0.08)
-        scale to apply to uniform random values from (-1, 1)
-        default of 0.08 results in uniform random values in (-0.08, 0.08)
-
-    Returns
-    -------
-    initialized_uniform, array-like
-        Array-like of uniform random values the same size as shape parameter
-    """
-    if type(shape[0]) is tuple:
-        shp = (shape[1][0], shape[0][0]) + shape[1][1:]
-    else:
-        shp = shape
-    # Make sure bounds aren't the same
-    return random_state.uniform(low=-scale, high=scale, size=shp).astype(
-        "float32")
-
-
 def np_normal(shape, random_state, scale=0.01):
     """
     Builds a numpy variable filled with normal random values
@@ -596,47 +546,6 @@ def np_normal(shape, random_state, scale=0.01):
     else:
         shp = shape
     return (scale * random_state.randn(*shp)).astype("float32")
-
-
-def np_tanh_fan_uniform(shape, random_state, scale=1.):
-    """
-    Builds a numpy variable filled with random values
-
-    Parameters
-    ----------
-    shape, tuple of ints or tuple of tuples
-        shape of values to initialize
-        tuple of ints should be single shape
-        tuple of tuples is primarily for convnets and should be of form
-        ((n_in_kernels, kernel_width, kernel_height),
-         (n_out_kernels, kernel_width, kernel_height))
-
-    random_state, numpy.random.RandomState() object
-
-    scale, float (default 1.)
-        default of 1. results in normal uniform random values
-        with sqrt(6 / (fan in + fan out)) scale
-
-    Returns
-    -------
-    initialized_fan, array-like
-        Array-like of random values the same size as shape parameter
-
-    References
-    ----------
-    Understanding the difficulty of training deep feedforward neural networks
-        X. Glorot, Y. Bengio
-    """
-    if type(shape[0]) is tuple:
-        kern_sum = np.prod(shape[0]) + np.prod(shape[1])
-        shp = (shape[1][0], shape[0][0]) + shape[1][1:]
-    else:
-        kern_sum = np.sum(shape)
-        shp = shape
-    # The . after the 6 is critical! shape has dtype int...
-    bound = scale * np.sqrt(6. / kern_sum)
-    return random_state.uniform(low=-bound, high=bound,
-                                size=shp).astype("float32")
 
 
 def np_tanh_fan_normal(shape, random_state, scale=1.):
@@ -679,70 +588,6 @@ def np_tanh_fan_normal(shape, random_state, scale=1.):
     return var * random_state.randn(*shp).astype("float32")
 
 
-def np_sigmoid_fan_uniform(shape, random_state, scale=4.):
-    """
-    Builds a numpy variable filled with random values
-
-    Parameters
-    ----------
-    shape, tuple of ints or tuple of tuples
-        shape of values to initialize
-        tuple of ints should be single shape
-        tuple of tuples is primarily for convnets and should be of form
-        ((n_in_kernels, kernel_width, kernel_height),
-         (n_out_kernels, kernel_width, kernel_height))
-
-    random_state, numpy.random.RandomState() object
-
-    scale, float (default 4.)
-        default of 4. results in uniform random values
-        with 4 * sqrt(6 / (fan in + fan out)) scale
-
-    Returns
-    -------
-    initialized_fan, array-like
-        Array-like of random values the same size as shape parameter
-
-    References
-    ----------
-    Understanding the difficulty of training deep feedforward neural networks
-        X. Glorot, Y. Bengio
-    """
-    return scale * np_tanh_fan_uniform(shape, random_state)
-
-
-def np_sigmoid_fan_normal(shape, random_state, scale=4.):
-    """
-    Builds a numpy variable filled with random values
-
-    Parameters
-    ----------
-    shape, tuple of ints or tuple of tuples
-        shape of values to initialize
-        tuple of ints should be single shape
-        tuple of tuples is primarily for convnets and should be of form
-        ((n_in_kernels, kernel_width, kernel_height),
-         (n_out_kernels, kernel_width, kernel_height))
-
-    random_state, numpy.random.RandomState() object
-
-    scale, float (default 4.)
-        default of 4. results in normal random values
-        with 4 * sqrt(2 / (fan in + fan out)) scale
-
-    Returns
-    -------
-    initialized_fan, array-like
-        Array-like of random values the same size as shape parameter
-
-    References
-    ----------
-    Understanding the difficulty of training deep feedforward neural networks
-        X. Glorot, Y. Bengio
-    """
-    return scale * np_tanh_fan_normal(shape, random_state)
-
-
 def np_variance_scaled_uniform(shape, random_state, scale=1.):
     """
     Builds a numpy variable filled with random values
@@ -782,127 +627,6 @@ def np_variance_scaled_uniform(shape, random_state, scale=1.):
     bound = scale * np.sqrt(3. / kern_sum)  # sqrt(3) for std of uniform
     return random_state.uniform(low=-bound, high=bound, size=shp).astype(
         "float32")
-
-
-def np_variance_scaled_randn(shape, random_state, scale=1.):
-    """
-    Builds a numpy variable filled with random values
-
-    Parameters
-    ----------
-    shape, tuple of ints or tuple of tuples
-        shape of values to initialize
-        tuple of ints should be single shape
-        tuple of tuples is primarily for convnets and should be of form
-        ((n_in_kernels, kernel_width, kernel_height),
-         (n_out_kernels, kernel_width, kernel_height))
-
-    random_state, numpy.random.RandomState() object
-
-    scale, float (default 1.)
-        default of 1. results in normal random values
-        with 1 * sqrt(1 / (n_dims)) scale
-
-    Returns
-    -------
-    initialized_scaled, array-like
-        Array-like of random values the same size as shape parameter
-
-    References
-    ----------
-    Efficient Backprop
-        Y. LeCun, L. Bottou, G. Orr, K. Muller
-    """
-    if type(shape[0]) is tuple:
-        shp = (shape[1][0], shape[0][0]) + shape[1][1:]
-        kern_sum = np.prod(shape[0])
-    else:
-        shp = shape
-        kern_sum = shape[0]
-    # Make sure bounds aren't the same
-    std = scale * np.sqrt(1. / kern_sum)
-    return std * random_state.randn(*shp).astype("float32")
-
-
-def np_deep_scaled_uniform(shape, random_state, scale=1.):
-    """
-    Builds a numpy variable filled with random values
-
-    Parameters
-    ----------
-    shape, tuple of ints or tuple of tuples
-        shape of values to initialize
-        tuple of ints should be single shape
-        tuple of tuples is primarily for convnets and should be of form
-        ((n_in_kernels, kernel_width, kernel_height),
-         (n_out_kernels, kernel_width, kernel_height))
-
-    random_state, numpy.random.RandomState() object
-
-    scale, float (default 1.)
-        default of 1. results in uniform random values
-        with 1 * sqrt(6 / (n_dims)) scale
-
-    Returns
-    -------
-    initialized_deep, array-like
-        Array-like of random values the same size as shape parameter
-
-    References
-    ----------
-    Diving Deep into Rectifiers: Surpassing Human-Level Performance on ImageNet
-        K. He, X. Zhang, S. Ren, J. Sun
-    """
-    if type(shape[0]) is tuple:
-        shp = (shape[1][0], shape[0][0]) + shape[1][1:]
-        kern_sum = np.prod(shape[0])
-    else:
-        shp = shape
-        kern_sum = shape[0]
-    #  Make sure bounds aren't the same
-    bound = scale * np.sqrt(6. / kern_sum)  # sqrt(3) for std of uniform
-    return random_state.uniform(low=-bound, high=bound, size=shp).astype(
-        "float32")
-
-
-def np_deep_scaled_normal(shape, random_state, scale=1.):
-    """
-    Builds a numpy variable filled with random values
-
-    Parameters
-    ----------
-    shape, tuple of ints or tuple of tuples
-        shape of values to initialize
-        tuple of ints should be single shape
-        tuple of tuples is primarily for convnets and should be of form
-        ((n_in_kernels, kernel_width, kernel_height),
-         (n_out_kernels, kernel_width, kernel_height))
-
-    random_state, numpy.random.RandomState() object
-
-    scale, float (default 1.)
-        default of 1. results in normal random values
-        with 1 * sqrt(2 / (n_dims)) scale
-
-    Returns
-    -------
-    initialized_deep, array-like
-        Array-like of random values the same size as shape parameter
-
-    References
-    ----------
-    Diving Deep into Rectifiers: Surpassing Human-Level Performance on ImageNet
-        K. He, X. Zhang, S. Ren, J. Sun
-    """
-    if type(shape[0]) is tuple:
-        shp = (shape[1][0], shape[0][0]) + shape[1][1:]
-        kern_sum = np.prod(shape[0])
-    else:
-        shp = shape
-        kern_sum = shape[0]
-    # Make sure bounds aren't the same
-    std = scale * np.sqrt(2. / kern_sum)  # sqrt(3) for std of uniform
-    return std * random_state.randn(*shp).astype("float32")
 
 
 def np_ortho(shape, random_state, scale=1.):
@@ -947,35 +671,6 @@ def np_ortho(shape, random_state, scale=1.):
     return (scale * res).astype("float32")
 
 
-def np_identity(shape, random_state, scale=0.98):
-    """
-    Identity initialization for square matrices
-
-    Parameters
-    ----------
-    shape, tuple of ints
-        shape of resulting array - shape[0] and shape[1] must match
-
-    random_state, numpy.random.RandomState() object
-
-    scale, float (default 0.98)
-        default of .98 results in .98 * eye initialization
-
-    Returns
-    -------
-    initialized_identity, array-like
-        identity initialized square matrix same size as shape
-
-    References
-    ----------
-    A Simple Way To Initialize Recurrent Networks of Rectified Linear Units
-        Q. Le, N. Jaitly, G. Hinton
-    """
-    assert shape[0] == shape[1]
-    res = np.eye(shape[0])
-    return (scale * res).astype("float32")
-
-
 def make_numpy_biases(bias_dims):
     return [np_zeros((dim,)) for dim in bias_dims]
 
@@ -996,12 +691,6 @@ def make_numpy_weights(in_dim, out_dims, random_state, init=None,
                 ff[i] = np_ortho
             else:
                 ff[i] = np_variance_scaled_uniform
-        elif init == "normal":
-            ff[i] = np_normal
-        elif init == "fan":
-            ff[i] = np_tanh_fan_normal
-        elif init == "ortho":
-            ff[i] = np_ortho
         else:
             raise ValueError("Unknown init type %s" % init)
     if scale == "default":
@@ -1141,7 +830,7 @@ def Linear(list_of_inputs, input_dims, output_dim, random_state, name=None,
     if weight_norm is None:
         # Let other classes delegate to default of linear
         weight_norm = True
-    # assume both have same shape -_-
+    # assume both have same shape ...
     nd = ndim(list_of_inputs[0])
     input_var = tf.concat(concat_dim=nd - 1, values=list_of_inputs)
     input_dim = sum(input_dims)
