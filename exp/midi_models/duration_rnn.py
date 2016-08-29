@@ -191,5 +191,5 @@ def _loop(itr, sess, inits=None, do_updates=True):
 if __name__ == "__main__":
     run_loop(_loop, train_itr, valid_itr,
              n_epochs=num_epochs,
-             checkpoint_delay=10,
+             checkpoint_delay=40,
              checkpoint_every_n_epochs=5)

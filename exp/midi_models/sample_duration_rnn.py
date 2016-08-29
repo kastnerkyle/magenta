@@ -26,6 +26,7 @@ def sample(kwargs):
      temperature) = validate_sample_args(**kwargs)
     # Wow this is nastyyyyy
     from duration_rnn import *
+    valid_itr.reset()
     duration_mb, note_mb = valid_itr.next()
     duration_and_pitch_to_midi(sample_path + "/gt_%i.mid" % runtime, duration_mb[:, 0], note_mb[:, 0])
     train_itr.reset()
@@ -114,9 +115,11 @@ if __name__ == '__main__':
     else:
         runtime = int(sys.argv[2])
     if len(sys.argv) < 4:
-        sample_path = "outputs"
+        sample_path = "samples"
     else:
         sample_path = str(sys.argv[3])
+    if not os.path.exists(sample_path):
+        os.makedirs(sample_path)
     kwargs = {"model_ckpt": sys.argv[1],
               "runtime": runtime,
               "sample_path": sample_path,

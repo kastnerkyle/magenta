@@ -178,31 +178,6 @@ def scan(fn, sequences, outputs_info):
         return o
     else:
         return r
-
-
-def broadcast(original, size_to_match):
-    nd = ndim(size_to_match)
-    if nd == 3:
-        b = tf.ones_like(size_to_match)[:, :, 0]
-        b = tf.expand_dims(b, 2)
-    else:
-        raise ValueError("Unsupported ndim")
-    # Assume axis 0 for now...
-    bo = tf.expand_dims(original, 0)
-    return b + bo
-
-
-def shift(a, fill_value=0.):
-    # shift forward, prepending fill_value
-    nd = ndim(a)
-    if nd == 3:
-        pre = tf.zeros_like(a)[0:1, :, :] + fill_value
-    elif nd == 2:
-        pre = tf.zeros_like(a)[0:1, :] + fill_value
-    else:
-        raise ValueError("Unhandled ndim")
-    ao = tf.concat(0, [pre, a])
-    return ni_slice(ao, -1)
 """
 end metautils
 """
